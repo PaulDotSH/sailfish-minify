@@ -6,10 +6,8 @@ use proc_macro::TokenStream;
 use syn::parse_macro_input;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-use std::fmt::Display;
 use std::fs::{copy, create_dir_all};
 use quote::{quote};
-use std::fmt;
 use syn::ItemStruct;
 use syn::Meta;
 use std::process::{Command, Output};
@@ -57,7 +55,7 @@ fn extract_template_path(str: &str) -> PathBuf {
     Path::new("./templates").join(&str[start_idx..end_idx])
 }
 
-fn minify_file(file_path: &PathBuf, new_file_path: &PathBuf, options: &MinifyOptions) {
+fn minify_file(file_path: &Path, new_file_path: &Path, options: &MinifyOptions) {
     if let Some(parent) = new_file_path.parent() {
         fs::create_dir_all(parent).expect("Cannot create directories to minify the file");
     }
@@ -98,42 +96,42 @@ struct MinifyOptions {
     minifier: Minifier,
 }
 
-fn run_custom_command_unchecked_wrapper(command: &str, input: &PathBuf, output: &PathBuf) -> Output {
-    let mut cmd: Vec<&str> = command.split(" ").collect();
+fn run_custom_command_unchecked_wrapper(command: &str, input: &Path, output: &Path) -> Output {
+    let mut cmd: Vec<&str> = command.split(' ').collect();
     cmd.extend(vec![input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
     run_custom_command_unchecked(&cmd)
 }
 
-fn run_custom_command_unchecked<'a>(cmd: &Vec<&'a str>) -> Output {
+fn run_custom_command_unchecked(cmd: &[&str]) -> Output {
     Command::new(cmd[0])
         .args(cmd.iter().skip(1))
         .output()
         .expect("Failed to run minifier")
 }
 
-fn run_custom_command<'a>(cmd: &Vec<&'a str>) -> Output {
+fn run_custom_command(cmd: &[& str]) -> Output {
     let out = run_custom_command_unchecked(cmd);
-    if out.stderr.len() > 0 {
+    if !out.stderr.is_empty() {
         panic!("Minifier ran with error  {:?}", String::from_utf8(out.stderr).unwrap())
     }
     out
 }
 
 impl MinifyOptions {
-    fn minify_file(&self, input: &PathBuf, output: &PathBuf) {
+    fn minify_file(&self, input: &Path, output: &Path) {
         match &self.minifier {
             Minifier::HTMLMinifier => {
-                run_custom_command(&vec!["html-minifier", "--collapse-whitespace", input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+                run_custom_command(&["html-minifier", "--collapse-whitespace", input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
             },
             Minifier::Custom(command) => {
-                let out = run_custom_command_unchecked_wrapper(&command, input, output);
+                let out = run_custom_command_unchecked_wrapper(command, input, output);
 
-                if out.stderr.len() > 0 {
+                if !out.stderr.is_empty() {
                     panic!("Minifier ran with error  {:?}", String::from_utf8(out.stderr).unwrap())
                 }
             },
             Minifier::CustomUnchecked(command) => {
-                run_custom_command_unchecked_wrapper(&command, input, output);
+                run_custom_command_unchecked_wrapper(command, input, output);
             }
         }
     }
