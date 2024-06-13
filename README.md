@@ -1,6 +1,10 @@
 # sailfish-minify
 Hacky but simple minification support for sailfish, using html-minifier by default
 
+# IMPORTANT!
+By default, sailfish-minify DOES also minify it's components, however if you want to disable this behavior, you can add the feature "minclude", which only minifies an included file if you use minclude!() instead of include!()
+However you need to have this exact syntax, since it's not a real macro
+
 ## Example
 
 ```rust
@@ -31,3 +35,4 @@ Output
 Unminified size: 2238 chars
 Minified size: 23 chars
 ```
+

@@ -1,6 +1,6 @@
 [package]
 name = "sailfish-minify"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Abrudan Paul - Andrei <paulandreiabrudan@protonmail.com>"]
 description = "Hacky but simple minification support for sailfish, using html-minifier by default"
 homepage = "https://github.com/pauldotsh/sailfish-minify"
@@ -19,13 +19,12 @@ test = false
 doctest = false
 
 [features]
-default = ["config"]
-# enable configuration file (sailfish.toml) support
-config = ["sailfish-compiler/config"]
+minclude = []
 
 [dependencies]
 proc-macro2 = "1.0.56"
 syn = "2.0.66"
+regex = "1.10.5"
 quote = "1.0.36"
 
 

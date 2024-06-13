@@ -3,14 +3,24 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use syn::parse_macro_input;
+use quote::quote;
+use regex::Regex;
+use std::fs::{copy, create_dir_all, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::{fs, io};
-use std::fs::{copy, create_dir_all};
-use quote::{quote};
+use syn::parse_macro_input;
 use syn::ItemStruct;
 use syn::Meta;
-use std::process::{Command, Output};
+
+#[cfg(feature = "minclude")]
+static INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *minclude!\("([^"]+)"\); *%>"#;
+#[cfg(not(feature = "minclude"))]
+static INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *include!\("([^"]+)"\); *%>"#;
+
+static TMP_MAIN_PATH: &str = "/tmp/sailfish-minify";
+static TMP_TEMPLATES_PATH: &str = "/tmp/sailfish-minify/templates";
 
 fn replace_path_attribute(input: TokenStream, new_path: &str) -> TokenStream {
     let struct_item = parse_macro_input!(input as ItemStruct);
@@ -26,7 +36,7 @@ fn replace_path_attribute(input: TokenStream, new_path: &str) -> TokenStream {
 }
 
 fn modify_template_path(path: &Path) -> PathBuf {
-    let mut new_path = PathBuf::from("/tmp/sailfish-web");
+    let mut new_path = PathBuf::from(TMP_MAIN_PATH);
 
     if let Some(parent) = path.parent() {
         new_path.push(parent);
@@ -98,7 +108,11 @@ struct MinifyOptions {
 
 fn run_custom_command_unchecked_wrapper(command: &str, input: &Path, output: &Path) -> Output {
     let mut cmd: Vec<&str> = command.split(' ').collect();
-    cmd.extend(vec![input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+    cmd.extend(vec![
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
     run_custom_command_unchecked(&cmd)
 }
 
@@ -109,10 +123,13 @@ fn run_custom_command_unchecked(cmd: &[&str]) -> Output {
         .expect("Failed to run minifier")
 }
 
-fn run_custom_command(cmd: &[& str]) -> Output {
+fn run_custom_command(cmd: &[&str]) -> Output {
     let out = run_custom_command_unchecked(cmd);
     if !out.stderr.is_empty() {
-        panic!("Minifier ran with error  {:?}", String::from_utf8(out.stderr).unwrap())
+        panic!(
+            "Minifier ran with error  {:?}",
+            String::from_utf8(out.stderr).unwrap()
+        )
     }
     out
 }
@@ -121,15 +138,24 @@ impl MinifyOptions {
     fn minify_file(&self, input: &Path, output: &Path) {
         match &self.minifier {
             Minifier::HTMLMinifier => {
-                run_custom_command(&["html-minifier", "--collapse-whitespace", input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
-            },
+                run_custom_command(&[
+                    "html-minifier",
+                    "--collapse-whitespace",
+                    input.to_str().unwrap(),
+                    "-o",
+                    output.to_str().unwrap(),
+                ]);
+            }
             Minifier::Custom(command) => {
                 let out = run_custom_command_unchecked_wrapper(command, input, output);
 
                 if !out.stderr.is_empty() {
-                    panic!("Minifier ran with error  {:?}", String::from_utf8(out.stderr).unwrap())
+                    panic!(
+                        "Minifier ran with error  {:?}",
+                        String::from_utf8(out.stderr).unwrap()
+                    )
                 }
-            },
+            }
             Minifier::CustomUnchecked(command) => {
                 run_custom_command_unchecked_wrapper(command, input, output);
             }
@@ -138,7 +164,10 @@ impl MinifyOptions {
 }
 
 // Ugly workaround
-fn parse_token_stream(tokens: TokenStream, options: &mut MinifyOptions) -> TokenStream {
+fn get_minify_options_from_token_stream(
+    tokens: TokenStream,
+    options: &mut MinifyOptions,
+) -> TokenStream {
     let mut struct_item = syn::parse_macro_input!(tokens as ItemStruct);
 
     for attr in &mut struct_item.attrs {
@@ -158,10 +187,34 @@ fn parse_token_stream(tokens: TokenStream, options: &mut MinifyOptions) -> Token
                 }
             }
         }
-
     }
 
     TokenStream::new()
+}
+
+fn minify_components(path: &Path, minify_options: &MinifyOptions) -> io::Result<()> {
+    let mut input_file = File::open(path)?;
+    let mut contents = String::new();
+    input_file.read_to_string(&mut contents)?;
+
+    let include_regex = Regex::new(INCLUDE_REPLACE_TOKEN_REGEX).unwrap();
+
+    for cap in include_regex.captures_iter(contents.clone().as_str()) {
+        let original_str = &cap[0]; // include!("file123")
+        let file_name = &cap[1]; // file123
+
+        let new_include = format!(r#"include!("{}/{}")"#, TMP_TEMPLATES_PATH, file_name);
+
+        contents = contents.replace(original_str, &new_include);
+
+        let source_path = format!("./templates/{}", file_name);
+        let destination_path = format!("{}/{}", TMP_TEMPLATES_PATH, file_name);
+        minify_options.minify_file(Path::new(&source_path), Path::new(&destination_path));
+
+        minify_components(Path::new(&destination_path), minify_options)?;
+    }
+
+    Ok(())
 }
 
 #[proc_macro_derive(TemplateOnce, attributes(templ, min_with))]
@@ -171,12 +224,13 @@ pub fn derive_template_once(tokens: TokenStream) -> TokenStream {
     let file_path = extract_template_path(&token_str);
     let new_path = modify_template_path(&file_path);
 
-    let templates_path = Path::new("/tmp/sailfish-web/templates");
-    copy_dir(Path::new("./templates/"), templates_path).unwrap();
+    let templates_path = Path::new(TMP_MAIN_PATH).join("./templates");
+    copy_dir(Path::new("./templates"), templates_path.as_path()).unwrap();
 
     let mut minify_options = MinifyOptions::default();
-    parse_token_stream(tokens.clone(), &mut minify_options);
+    get_minify_options_from_token_stream(tokens.clone(), &mut minify_options);
     minify_file(&file_path, &new_path, &minify_options);
+    minify_components(&new_path, &minify_options).unwrap();
 
     let input = replace_path_attribute(tokens, new_path.to_str().unwrap());
 
