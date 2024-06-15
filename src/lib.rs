@@ -5,7 +5,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use regex::Regex;
-use std::fs::{copy, create_dir_all, File};
+use std::fs::{create_dir_all, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -13,10 +13,6 @@ use std::{fs, io};
 use syn::parse_macro_input;
 use syn::ItemStruct;
 use syn::Meta;
-
-#[cfg(feature = "minclude")]
-static INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *minclude!\("([^"]+)"\); *%>"#;
-#[cfg(not(feature = "minclude"))]
 static INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *include!\("([^"]+)"\); *%>"#;
 
 static TMP_MAIN_PATH: &str = "/tmp/sailfish-minify";
@@ -43,15 +39,7 @@ fn modify_template_path(path: &Path) -> PathBuf {
     }
 
     if let Some(file_name) = path.file_name() {
-        let new_file_name = if let Some(ext) = path.extension() {
-            let mut file_stem = path.file_stem().unwrap().to_str().unwrap().to_owned();
-            file_stem.push_str(".min.");
-            file_stem.push_str(ext.to_str().unwrap());
-            file_stem
-        } else {
-            format!("{}.min", file_name.to_str().unwrap())
-        };
-        new_path.push(new_file_name);
+        new_path.push(format!("{}.min", file_name.to_str().unwrap()));
     }
     new_path
 }
@@ -65,15 +53,7 @@ fn extract_template_path(str: &str) -> PathBuf {
     Path::new("./templates").join(&str[start_idx..end_idx])
 }
 
-fn minify_file(file_path: &Path, new_file_path: &Path, options: &MinifyOptions) {
-    if let Some(parent) = new_file_path.parent() {
-        fs::create_dir_all(parent).expect("Cannot create directories to minify the file");
-    }
-
-    options.minify_file(file_path, new_file_path);
-}
-
-fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_dir_and_minify(src: &Path, dst: &Path, minify_options: &MinifyOptions) -> io::Result<()> {
     if !dst.exists() {
         create_dir_all(dst)?;
     }
@@ -85,9 +65,13 @@ fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
         dst_path.push(entry.file_name());
 
         if src_path.is_dir() {
-            copy_dir(&src_path, &dst_path)?;
+            copy_dir_and_minify(&src_path, &dst_path, minify_options)?;
         } else {
-            copy(&src_path, &dst_path)?;
+            // copy(&src_path, &dst_path)?;
+            minify_options.minify_file(
+                &src_path,
+                Path::new(&format!("{}.min", dst_path.to_str().unwrap())),
+            );
         }
     }
     Ok(())
@@ -192,28 +176,44 @@ fn get_minify_options_from_token_stream(
     TokenStream::new()
 }
 
-fn minify_components(path: &Path, minify_options: &MinifyOptions) -> io::Result<()> {
-    let mut input_file = File::open(path)?;
+fn minify_file_and_components(
+    file_path: &Path,
+    new_path: &Path,
+    minify_options: &MinifyOptions,
+) -> io::Result<()> {
+    let mut input_file = File::open(file_path)?;
     let mut contents = String::new();
     input_file.read_to_string(&mut contents)?;
-
     let include_regex = Regex::new(INCLUDE_REPLACE_TOKEN_REGEX).unwrap();
-
     for cap in include_regex.captures_iter(contents.clone().as_str()) {
-        let original_str = &cap[0]; // include!("file123")
-        let file_name = &cap[1]; // file123
+        let original_str = &cap[0]; // include!("file123.stpl")
+        let file_name = &cap[1]; // file123.stpl
 
-        let new_include = format!(r#"include!("{}/{}")"#, TMP_TEMPLATES_PATH, file_name);
+        let new_file_path = format!(
+            "/{}/{}/{}.min",
+            TMP_MAIN_PATH,
+            file_path.parent().unwrap().to_str().unwrap(),
+            file_name
+        );
 
+        let new_include = format!(r#"<% include!("{}"); %>"#, new_file_path);
         contents = contents.replace(original_str, &new_include);
 
-        let source_path = format!("./templates/{}", file_name);
-        let destination_path = format!("{}/{}", TMP_TEMPLATES_PATH, file_name);
-        minify_options.minify_file(Path::new(&source_path), Path::new(&destination_path));
+        create_dir_all(new_path.parent().unwrap()).expect("Cannot create dir");
+        fs::write(new_path, &contents)?;
 
-        minify_components(Path::new(&destination_path), minify_options)?;
+        let tmp_fp = file_path.parent().unwrap();
+        let component_file_path = format!("{}/{}", tmp_fp.to_str().unwrap(), file_name);
+
+        minify_file_and_components(
+            component_file_path.as_ref(),
+            new_file_path.as_ref(),
+            minify_options,
+        ).expect("Couldn't minify a component :(");
     }
-
+    create_dir_all(new_path.parent().unwrap()).expect("Cannot create dir");
+    fs::write(new_path, contents)?;
+    minify_options.minify_file(new_path, new_path);
     Ok(())
 }
 
@@ -224,13 +224,13 @@ pub fn derive_template_once(tokens: TokenStream) -> TokenStream {
     let file_path = extract_template_path(&token_str);
     let new_path = modify_template_path(&file_path);
 
-    let templates_path = Path::new(TMP_MAIN_PATH).join("./templates");
-    copy_dir(Path::new("./templates"), templates_path.as_path()).unwrap();
-
     let mut minify_options = MinifyOptions::default();
     get_minify_options_from_token_stream(tokens.clone(), &mut minify_options);
-    minify_file(&file_path, &new_path, &minify_options);
-    minify_components(&new_path, &minify_options).unwrap();
+
+    #[cfg(feature = "minifiy-components")]
+    minify_file_and_components(&file_path, &new_path, &minify_options).unwrap();
+    #[cfg(not(feature = "minifiy-components"))]
+    minify_options.minify_file(&file_path, &new_path);
 
     let input = replace_path_attribute(tokens, new_path.to_str().unwrap());
 
