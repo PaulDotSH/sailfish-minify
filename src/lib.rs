@@ -53,7 +53,7 @@ fn extract_template_path(str: &str) -> PathBuf {
     Path::new("./templates").join(&str[start_idx..end_idx])
 }
 
-fn copy_dir_and_minify(src: &Path, dst: &Path, minify_options: &MinifyOptions) -> io::Result<()> {
+fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     if !dst.exists() {
         create_dir_all(dst)?;
     }
@@ -65,13 +65,9 @@ fn copy_dir_and_minify(src: &Path, dst: &Path, minify_options: &MinifyOptions) -
         dst_path.push(entry.file_name());
 
         if src_path.is_dir() {
-            copy_dir_and_minify(&src_path, &dst_path, minify_options)?;
+            copy_dir(&src_path, &dst_path)?;
         } else {
-            // copy(&src_path, &dst_path)?;
-            minify_options.minify_file(
-                &src_path,
-                Path::new(&format!("{}.min", dst_path.to_str().unwrap())),
-            );
+            fs::copy(&src_path, &dst_path)?;
         }
     }
     Ok(())
@@ -227,10 +223,13 @@ pub fn derive_template_once(tokens: TokenStream) -> TokenStream {
     let mut minify_options = MinifyOptions::default();
     get_minify_options_from_token_stream(tokens.clone(), &mut minify_options);
 
-    #[cfg(feature = "minifiy-components")]
+    #[cfg(feature = "minify-components")]
     minify_file_and_components(&file_path, &new_path, &minify_options).unwrap();
-    #[cfg(not(feature = "minifiy-components"))]
-    minify_options.minify_file(&file_path, &new_path);
+    #[cfg(not(feature = "minify-components"))]
+    {
+        copy_dir(Path::new("./templates"), Path::new(TMP_TEMPLATES_PATH));
+        minify_options.minify_file(&file_path, &new_path);
+    }
 
     let input = replace_path_attribute(tokens, new_path.to_str().unwrap());
 

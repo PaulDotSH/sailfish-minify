@@ -1,6 +1,6 @@
 [package]
 name = "sailfish-minify"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Abrudan Paul - Andrei <paulandreiabrudan@protonmail.com>"]
 description = "Hacky but simple minification support for sailfish, using html-minifier by default"
 homepage = "https://github.com/pauldotsh/sailfish-minify"
@@ -19,8 +19,8 @@ test = false
 doctest = false
 
 [features]
-default = ["minifiy-components"]
-minifiy-components = []
+default = ["minify-components"]
+minify-components = []
 
 [dependencies]
 proc-macro2 = "1.0.56"
