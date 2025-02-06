@@ -213,8 +213,8 @@ fn minify_file_and_components(
     Ok(())
 }
 
-#[proc_macro_derive(TemplateOnce, attributes(templ, min_with))]
-pub fn derive_template_once(tokens: TokenStream) -> TokenStream {
+#[proc_macro_derive(TemplateSimple, attributes(templ, min_with))]
+pub fn derive_template_simple(tokens: TokenStream) -> TokenStream {
     let token_str = tokens.to_string();
 
     let file_path = extract_template_path(&token_str);
@@ -235,15 +235,15 @@ pub fn derive_template_once(tokens: TokenStream) -> TokenStream {
 
     let input = proc_macro2::TokenStream::from(input);
 
-    let output = sailfish_compiler::procmacro::derive_template(input);
-    // fs::remove_file(new_path);
+    let output = sailfish_compiler::procmacro::derive_template_simple(input);
+
     TokenStream::from(output)
 }
 
-/// WIP
-#[proc_macro_derive(Template, attributes(template, min_with))]
-pub fn derive_template(tokens: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(tokens);
-    let output = sailfish_compiler::procmacro::derive_template(input);
-    TokenStream::from(output)
-}
+// /// WIP
+// #[proc_macro_derive(Template, attributes(template, min_with))]
+// pub fn derive_template(tokens: TokenStream) -> TokenStream {
+//     let input = proc_macro2::TokenStream::from(tokens);
+//     let output = sailfish_compiler::procmacro::derive_template(input);
+//     TokenStream::from(output)
+// }
