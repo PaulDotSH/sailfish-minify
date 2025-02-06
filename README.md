@@ -8,9 +8,9 @@ Also, the components are minified with the "parent" template options, this behav
 ## Example
 
 ```rust
-use sailfish::TemplateOnce;
+use sailfish::TemplateSimple;
 
-#[derive(Debug, sailfish_minify::TemplateOnce)]
+#[derive(Debug, sailfish_minify::TemplateSimple)]
 #[templ(path = "test.stpl")] // Notice the use of templ instead of template
 // #[min_with(HTMLMinifier)] // Default is HTMLMinifier anyway
 // #[min_with(Custom(html-minifier --collapse-whitespace))] // You can even use custom commands
@@ -18,7 +18,7 @@ struct MinifiedTestTemplate<'a> {
     s: &'a str
 }
 
-#[derive(Debug, TemplateOnce)]
+#[derive(Debug, TemplateSimple)]
 #[template(path = "test.stpl")]
 struct TestTemplate<'a> {
     s: &'a str
