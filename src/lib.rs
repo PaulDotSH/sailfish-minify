@@ -20,11 +20,25 @@ static INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *include!\("([^"]+)"\); *%>"#;
 
 static TMP_MAIN_PATH: &str = "/tmp/sailfish-minify";
 
+// Cache Regex compilation
+static INCLUDE_REGEX_CACHE: OnceLock<Regex> = OnceLock::new();
+static TEMPLATE_PATH_REGEX_CACHE: OnceLock<Regex> = OnceLock::new();
+
 // Global cache to track processed components across all template compilations
 static GLOBAL_PROCESSED_CACHE: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
 
 fn get_global_cache() -> &'static Mutex<HashMap<PathBuf, PathBuf>> {
     GLOBAL_PROCESSED_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_include_regex() -> &'static Regex {
+    INCLUDE_REGEX_CACHE.get_or_init(|| Regex::new(INCLUDE_REPLACE_TOKEN_REGEX).unwrap())
+}
+
+fn get_template_path_regex() -> &'static Regex {
+    TEMPLATE_PATH_REGEX_CACHE.get_or_init(|| {
+        Regex::new(r#"#\[template\([^)]*path\s*=\s*"([^"]+)"[^)]*\)\]"#).unwrap()
+    })
 }
 
 fn replace_path_attribute(input: TokenStream, new_path: &str) -> TokenStream {
@@ -62,7 +76,7 @@ fn modify_template_path(path: &Path) -> PathBuf {
 
 fn extract_template_path(str: &str) -> PathBuf {
     // Look for #[template(path = "...")]
-    let template_regex = regex::Regex::new(r#"#\[template\([^)]*path\s*=\s*"([^"]+)"[^)]*\)\]"#).unwrap();
+    let template_regex = get_template_path_regex();
     
     if let Some(captures) = template_regex.captures(str) {
         let path = captures.get(1).expect("Cannot find path in template").as_str();
@@ -204,7 +218,7 @@ fn minify_file_and_components_internal(
     let mut input_file = File::open(file_path)?;
     let mut contents = String::new();
     input_file.read_to_string(&mut contents)?;
-    let include_regex = Regex::new(INCLUDE_REPLACE_TOKEN_REGEX).unwrap();
+    let include_regex = get_include_regex();
     
     let includes: Vec<_> = include_regex.captures_iter(&contents).collect();
     
