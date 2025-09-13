@@ -11,7 +11,7 @@ Also, the components are minified with the "parent" template options, this behav
 use sailfish::TemplateSimple;
 
 #[derive(Debug, sailfish_minify::TemplateSimple)]
-#[templ(path = "test.stpl")] // Notice the use of templ instead of template
+#[template(path = "test.stpl")] // Notice the use of templ instead of template
 // #[min_with(HTMLMinifier)] // Default is HTMLMinifier anyway
 // #[min_with(Custom(html-minifier --collapse-whitespace))] // You can even use custom commands
 struct MinifiedTestTemplate<'a> {
