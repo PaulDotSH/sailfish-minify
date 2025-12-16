@@ -100,7 +100,7 @@ struct MinifyOptions {
 }
 
 fn run_custom_command_unchecked_wrapper(command: &str, input: &Path, output: &Path) -> Output {
-    let mut cmd: Vec<&str> = command.split(' ').collect();
+    let mut cmd: Vec<&str> = command.split([' ', '\n']).collect();
     cmd.extend(vec![
         input.to_str().unwrap(),
         "-o",
