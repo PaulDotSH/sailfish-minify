@@ -1,6 +1,6 @@
 [package]
 name = "sailfish-minify"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["Abrudan Paul - Andrei <paulandreiabrudan@proton.me>"]
 description = "Hacky but simple minification support for sailfish, using html-minifier by default"
 homepage = "https://github.com/pauldotsh/sailfish-minify"
