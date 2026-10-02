@@ -70,4 +70,28 @@ Write-File "unicode_heavy.stpl" @'
 </body></html>
 '@
 
+# Large whitespace-heavy fixture used by integration_tests.rs.
+$bigLines = @(
+    '<!DOCTYPE html>',
+    '<html>',
+    '<head><title><%= title %></title></head>',
+    '<body>',
+    '<% for i in 1..=500 { %>'
+)
+for ($i = 0; $i -lt 40; $i++) {
+    $bigLines += '    <div class="whitespace-heavy">        <p>        Repeated content with deliberate whitespace for minification testing.        </p>    </div>'
+    $bigLines += (' ' * 100)
+}
+$bigLines += @(
+    '    <section>',
+    '        <h2>Section Heading <%= i %></h2>',
+    '        <p>        Section body content with enough whitespace to exercise the native minifier.        </p>',
+    '    </section>',
+    '<% } %>',
+    '<footer>UNIQUE_MARKER_FOOTER</footer>',
+    '</body>',
+    '</html>'
+)
+Write-File "big_whitespace.stpl" ($bigLines -join "`n")
+
 Write-Host "Regenerated test fixtures in templates/test/"

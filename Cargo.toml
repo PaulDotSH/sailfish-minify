@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "sailfish-minify"
-version = "0.11.1"
+version = "0.11.2"
 authors = ["Abrudan Paul - Andrei <paulandreiabrudan@proton.me>"]
 description = "Hacky but simple minification support for sailfish, using html-minifier by default"
 homepage = "https://github.com/pauldotsh/sailfish-minify"
@@ -34,7 +34,7 @@ regex = ["dep:regex"]
 
 [dependencies]
 proc-macro2 = "1.0.107"
-syn = { version = "3.0.3", features = ["full"] }
+syn = { version = "3.0.6", features = ["full"] }
 quote = "1.0.47"
 regex = { version = "1.13.1", optional = true }
 rayon = "1.12.0"
@@ -43,12 +43,12 @@ minify-html = { version = "0.18.1", optional = true }
 
 
 [dependencies.sailfish-compiler]
-version = "0.11.3"
+version = "0.11.8"
 default-features = false
 features = ["procmacro"]
 
 [dev-dependencies]
-sailfish = "0.11.3"
+sailfish = "0.11.8"
 
 [[test]]
 name = "integration_tests"
