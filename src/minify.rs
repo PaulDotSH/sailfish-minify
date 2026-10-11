@@ -2,6 +2,7 @@ use quote::quote;
 use rayon::prelude::*;
 #[cfg(feature = "regex")]
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::io::Read;
@@ -131,16 +132,13 @@ pub fn extract_template_path(str: &str) -> syn::Result<PathBuf> {
 }
 
 fn template_path_from_attrs(attrs: &[Attribute]) -> syn::Result<PathBuf> {
-    let path = attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("template"))
-        .find_map(template_attr_path)
-        .ok_or_else(|| {
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Cannot find template path in struct attributes. Make sure to use #[template(path = \"...\")] for minified templates",
-            )
-        })?;
+    let Some(Lit::Str(path)) = template_attr_lit(attrs, "path") else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Cannot find template path in struct attributes. Make sure to use #[template(path = \"...\")] for minified templates",
+        ));
+    };
+    let path = path.value();
 
     let path = Path::new(&path);
     if path.is_absolute() {
@@ -150,18 +148,24 @@ fn template_path_from_attrs(attrs: &[Attribute]) -> syn::Result<PathBuf> {
     }
 }
 
-/// The `path = "..."` value of a `#[template(...)]` attribute, if it has one.
-fn template_attr_path(attr: &Attribute) -> Option<String> {
-    let args = attr
-        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .ok()?;
-    args.into_iter().find_map(|meta| match meta {
-        Meta::NameValue(nv) if nv.path.is_ident("path") => match nv.value {
-            Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => Some(s.value()),
-            _ => None,
-        },
-        _ => None,
-    })
+/// The literal value of a `key = ...` option in the struct's `#[template(...)]`
+/// attributes, if any.
+fn template_attr_lit(attrs: &[Attribute], key: &str) -> Option<Lit> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("template"))
+        .find_map(|attr| {
+            let args = attr
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .ok()?;
+            args.into_iter().find_map(|meta| match meta {
+                Meta::NameValue(nv) if nv.path.is_ident(key) => match nv.value {
+                    Expr::Lit(ExprLit { lit, .. }) => Some(lit),
+                    _ => None,
+                },
+                _ => None,
+            })
+        })
 }
 
 /// Compute the minified output path for a source template: the same relative
@@ -225,34 +229,34 @@ pub fn set_template_path(item: &mut ItemStruct, new_path: &str) {
 /// `sailfish-minify-core`.
 #[allow(dead_code)]
 pub fn extract_includes(contents: &str) -> Vec<String> {
-    extract_include_ranges(contents)
+    extract_include_ranges(contents, DEFAULT_DELIMITER)
         .into_iter()
         .map(|(_, _, file_name)| file_name)
         .collect()
 }
 
-/// Extract every `<% include!("..."); %>` occurrence as
-/// `(byte_range, full_match, file_name)` triples, in source order. The byte
-/// range covers the full `include!` token, so callers can splice replacements
-/// back into the source without re-scanning it.
+/// Extract every `<% include!("..."); %>` occurrence (with `%` replaced by
+/// `delimiter`) as `(byte_range, full_match, file_name)` triples, in source
+/// order. The byte range covers the full `include!` token, so callers can
+/// splice replacements back into the source without re-scanning it.
 ///
-/// Uses the `regex` engine when the `regex` feature is enabled and the
-/// dependency-free manual parser otherwise.
-pub fn extract_include_ranges(contents: &str) -> Vec<(Range<usize>, String, String)> {
+/// Uses the `regex` engine for the default delimiter when the `regex` feature
+/// is enabled, and the dependency-free manual parser otherwise.
+pub fn extract_include_ranges(
+    contents: &str,
+    delimiter: char,
+) -> Vec<(Range<usize>, String, String)> {
     #[cfg(feature = "regex")]
-    {
-        get_include_regex()
+    if delimiter == DEFAULT_DELIMITER {
+        return get_include_regex()
             .captures_iter(contents)
             .map(|cap| {
                 let m = cap.get(0).unwrap();
                 (m.range(), cap[0].to_string(), cap[1].to_string())
             })
-            .collect()
+            .collect();
     }
-    #[cfg(not(feature = "regex"))]
-    {
-        extract_includes_manual_ranges(contents)
-    }
+    extract_includes_manual_ranges(contents, delimiter)
 }
 
 /// Extract every `<% include!("..."); %>` occurrence as `(full_match, file_name)`
@@ -262,7 +266,7 @@ pub fn extract_include_ranges(contents: &str) -> Vec<(Range<usize>, String, Stri
 /// is enabled, hence `dead_code`.
 #[allow(dead_code)]
 pub fn extract_includes_spans(contents: &str) -> Vec<(String, String)> {
-    extract_include_ranges(contents)
+    extract_include_ranges(contents, DEFAULT_DELIMITER)
         .into_iter()
         .map(|(_, full_match, file_name)| (full_match, file_name))
         .collect()
@@ -277,7 +281,7 @@ pub fn extract_includes_spans(contents: &str) -> Vec<(String, String)> {
 /// benchmarks even when the `regex` feature is enabled, hence `dead_code`.
 #[allow(dead_code)]
 pub fn extract_includes_manual(contents: &str) -> Vec<(String, String)> {
-    extract_includes_manual_ranges(contents)
+    extract_includes_manual_ranges(contents, DEFAULT_DELIMITER)
         .into_iter()
         .map(|(_, full_match, file_name)| (full_match, file_name))
         .collect()
@@ -288,14 +292,17 @@ pub fn extract_includes_manual(contents: &str) -> Vec<(String, String)> {
 ///
 /// `full_match` is kept alongside the byte range so callers that only need the
 /// text (e.g. the unit tests) can share this parser.
-#[allow(dead_code)]
-fn extract_includes_manual_ranges(contents: &str) -> Vec<(Range<usize>, String, String)> {
+fn extract_includes_manual_ranges(
+    contents: &str,
+    delimiter: char,
+) -> Vec<(Range<usize>, String, String)> {
+    let (open, close) = block_delimiters(delimiter);
     let mut results = Vec::new();
     let mut pos = 0;
 
-    while let Some(rel) = contents[pos..].find("<%") {
+    while let Some(rel) = contents[pos..].find(&*open) {
         let start = pos + rel;
-        let mut rest = &contents[start + 2..];
+        let mut rest = &contents[start + open.len()..];
 
         // `rest` stays a slice of `contents` throughout, so the parsed file
         // name remains valid once the block returns.
@@ -338,7 +345,7 @@ fn extract_includes_manual_ranges(contents: &str) -> Vec<(Range<usize>, String, 
             rest = &rest[1..];
 
             rest = rest.trim_start();
-            if !rest.starts_with("%>") {
+            if !rest.starts_with(&*close) {
                 break 'parse None;
             }
 
@@ -346,14 +353,14 @@ fn extract_includes_manual_ranges(contents: &str) -> Vec<(Range<usize>, String, 
         };
 
         if let Some(file_name) = file_name {
-            // `rest` currently points at the `%>`; its absolute offset in
-            // `contents` is `contents.len() - rest.len()`, so the match ends
-            // two bytes past it.
-            let end = contents.len() - rest.len() + 2;
+            // `rest` currently points at the closing delimiter; its absolute
+            // offset in `contents` is `contents.len() - rest.len()`, so the
+            // match ends just past it.
+            let end = contents.len() - rest.len() + close.len();
             results.push((start..end, contents[start..end].to_string(), file_name.to_string()));
             pos = end;
         } else {
-            pos = start + 2;
+            pos = start + open.len();
         }
     }
 
@@ -391,6 +398,108 @@ pub fn native_minify_cfg() -> minify_html::Cfg {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MinifyOptions {
     pub minifier: Minifier,
+    /// Sailfish block delimiter, from `#[template(delimiter = '...')]`.
+    pub delimiter: char,
+}
+
+/// Sailfish's default block delimiter (`<% ... %>`), the only one minify-html
+/// and html-minifier know to leave untouched.
+pub const DEFAULT_DELIMITER: char = '%';
+
+/// The `<D` and `D>` that open and close a sailfish block. Borrowed for the
+/// default delimiter, so the common path never allocates.
+fn block_delimiters(delimiter: char) -> (Cow<'static, str>, Cow<'static, str>) {
+    if delimiter == DEFAULT_DELIMITER {
+        (Cow::Borrowed("<%"), Cow::Borrowed("%>"))
+    } else {
+        (format!("<{delimiter}").into(), format!("{delimiter}>").into())
+    }
+}
+
+/// Start and end of the `<% ... %>` placeholders that stand in for
+/// custom-delimiter blocks while a minifier runs. The spaces make minifiers
+/// treat them like typical `<%= value %>` blocks (e.g. keeping attribute
+/// quotes).
+const PLACEHOLDER_OPEN: &str = "<% sailfish-minify:";
+const PLACEHOLDER_CLOSE: &str = " %>";
+
+/// Swap every `<D ... D>` block and `<DD` escape (`D` = `delimiter`) for a
+/// numbered `<% ... %>` placeholder, which both minifiers pass through.
+///
+/// Returns the protected source and each block's byte range in `source`, for
+/// `restore_blocks`. Like the default-delimiter path, a block ends at the first
+/// closing delimiter; an unterminated block is left for sailfish to report.
+pub fn protect_blocks(source: &str, delimiter: char) -> io::Result<(String, Vec<Range<usize>>)> {
+    if source.contains(PLACEHOLDER_OPEN) {
+        return Err(io::Error::other(format!(
+            "template contains the reserved text {PLACEHOLDER_OPEN:?}"
+        )));
+    }
+
+    let (open, close) = block_delimiters(delimiter);
+    let mut protected = String::with_capacity(source.len());
+    let mut blocks = Vec::new();
+    let mut pos = 0;
+
+    while let Some(rel) = source[pos..].find(&*open) {
+        let start = pos + rel;
+        let body = start + open.len();
+        let end = if source[body..].starts_with(delimiter) {
+            // `<DD` is sailfish's escape for a literal `<D`.
+            body + delimiter.len_utf8()
+        } else if let Some(rel) = source[body..].find(&*close) {
+            body + rel + close.len()
+        } else {
+            break;
+        };
+
+        protected.push_str(&source[pos..start]);
+        protected.push_str(PLACEHOLDER_OPEN);
+        protected.push_str(&blocks.len().to_string());
+        protected.push_str(PLACEHOLDER_CLOSE);
+        blocks.push(start..end);
+        pos = end;
+    }
+    protected.push_str(&source[pos..]);
+
+    Ok((protected, blocks))
+}
+
+/// Put the original blocks from `source` back in place of the placeholders
+/// `protect_blocks` left in `minified`.
+pub fn restore_blocks(minified: &str, source: &str, blocks: &[Range<usize>]) -> String {
+    let mut out = String::with_capacity(minified.len());
+    let mut pos = 0;
+
+    while let Some(rel) = minified[pos..].find(PLACEHOLDER_OPEN) {
+        let start = pos + rel;
+        let digits = start + PLACEHOLDER_OPEN.len();
+        let digits_end =
+            digits + minified[digits..].bytes().take_while(u8::is_ascii_digit).count();
+        let block = minified[digits..digits_end]
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| blocks.get(index))
+            .filter(|_| minified[digits_end..].starts_with(PLACEHOLDER_CLOSE));
+
+        // `protect_blocks` refuses sources containing the placeholder text, so
+        // a malformed one could only come from a minifier rewriting it; leave
+        // it as is.
+        match block {
+            Some(range) => {
+                out.push_str(&minified[pos..start]);
+                out.push_str(&source[range.clone()]);
+                pos = digits_end + PLACEHOLDER_CLOSE.len();
+            }
+            None => {
+                out.push_str(&minified[pos..digits]);
+                pos = digits;
+            }
+        }
+    }
+    out.push_str(&minified[pos..]);
+
+    out
 }
 
 impl Default for MinifyOptions {
@@ -403,6 +512,7 @@ impl Default for MinifyOptions {
             minifier: Minifier::Native,
             #[cfg(not(feature = "native-minifier"))]
             minifier: Minifier::HTMLMinifier,
+            delimiter: DEFAULT_DELIMITER,
         }
     }
 }
@@ -451,6 +561,49 @@ fn parse_command_arg(tokens: &proc_macro2::TokenStream) -> String {
 impl MinifyOptions {
     pub fn minify_file(&self, input: &Path, output: &Path) -> io::Result<()> {
         MINIFIER_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+
+        if self.minifier == Minifier::Native {
+            #[cfg(feature = "native-minifier")]
+            {
+                let source = fs::read_to_string(input)?;
+                return fs::write(output, self.minify_native(&source)?);
+            }
+            #[cfg(not(feature = "native-minifier"))]
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the `Native` minifier requires the `native-minifier` feature",
+            ));
+        }
+
+        if self.delimiter == DEFAULT_DELIMITER {
+            return self.run_cli(input, output);
+        }
+
+        // CLI minifiers only skip `<% %>` blocks, so run them on a copy with
+        // the custom-delimiter blocks swapped for placeholders.
+        let source = fs::read_to_string(input)?;
+        let (protected, blocks) = protect_blocks(&source, self.delimiter)?;
+        fs::write(output, protected)?;
+        self.run_cli(output, output)?;
+        let minified = fs::read_to_string(output)?;
+        fs::write(output, restore_blocks(&minified, &source, &blocks))
+    }
+
+    /// Minify `source` in memory with `minify-html`.
+    #[cfg(feature = "native-minifier")]
+    pub fn minify_native(&self, source: &str) -> io::Result<Vec<u8>> {
+        if self.delimiter == DEFAULT_DELIMITER {
+            return Ok(minify_html::minify(source.as_bytes(), &native_minify_cfg()));
+        }
+
+        let (protected, blocks) = protect_blocks(source, self.delimiter)?;
+        let minified = minify_html::minify(protected.as_bytes(), &native_minify_cfg());
+        let minified = String::from_utf8(minified).map_err(io::Error::other)?;
+        Ok(restore_blocks(&minified, source, &blocks).into_bytes())
+    }
+
+    /// Run a CLI minifier on `input`, writing to `output`.
+    fn run_cli(&self, input: &Path, output: &Path) -> io::Result<()> {
         match &self.minifier {
             Minifier::HTMLMinifier => {
                 run_custom_command(&[
@@ -474,19 +627,7 @@ impl MinifyOptions {
             Minifier::CustomUnchecked(command) => {
                 run_custom_command_unchecked_wrapper(command, input, output);
             }
-            #[cfg(feature = "native-minifier")]
-            Minifier::Native => {
-                let contents = fs::read(input)?;
-                let minified = minify_html::minify(&contents, &native_minify_cfg());
-                fs::write(output, minified)?;
-            }
-            #[cfg(not(feature = "native-minifier"))]
-            Minifier::Native => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "the `Native` minifier requires the `native-minifier` feature",
-                ));
-            }
+            Minifier::Native => unreachable!("`minify_file` handles the native minifier"),
         }
         Ok(())
     }
@@ -513,6 +654,10 @@ fn minify_options_from_attrs(attrs: &[Attribute]) -> syn::Result<MinifyOptions> 
 }
 
 fn apply_minify_attrs(attrs: &[Attribute], options: &mut MinifyOptions) -> syn::Result<()> {
+    if let Some(Lit::Char(delimiter)) = template_attr_lit(attrs, "delimiter") {
+        options.delimiter = delimiter.value();
+    }
+
     for attr in attrs {
         if !attr.path().is_ident("min_with") {
             continue;
@@ -618,7 +763,8 @@ fn minify_file_and_components_internal(
     let mut contents = String::new();
     input_file.read_to_string(&mut contents)?;
 
-    let includes = extract_include_ranges(&contents);
+    let delimiter = minify_options.delimiter;
+    let includes = extract_include_ranges(&contents, delimiter);
 
     if !includes.is_empty() {
         // A component included many times (an icon, a button) only needs to
@@ -661,7 +807,10 @@ fn minify_file_and_components_internal(
                 // paths, which mangles `C:\...` style paths.
                 let relative_path = pathdiff::diff_paths(&child_new_path, &parent_output_dir)
                     .unwrap_or_else(|| child_new_path.clone());
-                let new_include = format!(r#"<% include!("{}"); %>"#, relative_path.to_string_lossy());
+                let new_include = format!(
+                    r#"<{delimiter} include!("{}"); {delimiter}>"#,
+                    relative_path.to_string_lossy()
+                );
 
                 Ok(new_include)
             }).collect();
@@ -703,7 +852,7 @@ fn minify_file_and_components_internal(
                 // the unit tests use to observe cache behavior, and the fast
                 // path performs the same minification without calling it.
                 MINIFIER_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
-                Some(minify_html::minify(contents.as_bytes(), &native_minify_cfg()))
+                Some(minify_options.minify_native(&contents)?)
             } else {
                 None
             }
@@ -748,15 +897,20 @@ pub fn minify_file_and_components(
 /// `minify-components` feature is disabled, so only the templates that are
 /// actually referenced end up in the temp dir.
 #[allow(dead_code)]
-pub fn copy_referenced_template_and_includes(source: &Path, base: &Path) -> io::Result<()> {
+pub fn copy_referenced_template_and_includes(
+    source: &Path,
+    base: &Path,
+    delimiter: char,
+) -> io::Result<()> {
     let mut visited = HashSet::new();
-    copy_referenced_template_and_includes_inner(source, base, &mut visited)
+    copy_referenced_template_and_includes_inner(source, base, delimiter, &mut visited)
 }
 
 #[allow(dead_code)]
 fn copy_referenced_template_and_includes_inner(
     source: &Path,
     base: &Path,
+    delimiter: char,
     visited: &mut HashSet<PathBuf>,
 ) -> io::Result<()> {
     let canonical = source.canonicalize().unwrap_or_else(|_| source.to_path_buf());
@@ -771,9 +925,9 @@ fn copy_referenced_template_and_includes_inner(
     fs::copy(source, &destination)?;
 
     let contents = fs::read_to_string(source)?;
-    for file_name in extract_includes(&contents) {
+    for (_, _, file_name) in extract_include_ranges(&contents, delimiter) {
         let child = source.parent().unwrap().join(file_name);
-        copy_referenced_template_and_includes_inner(&child, base, visited)?;
+        copy_referenced_template_and_includes_inner(&child, base, delimiter, visited)?;
     }
 
     Ok(())
@@ -797,7 +951,7 @@ pub fn minify_template(
 
     #[cfg(not(feature = "minify-components"))]
     {
-        copy_referenced_template_and_includes(file_path, tmp_main_path())?;
+        copy_referenced_template_and_includes(file_path, tmp_main_path(), minify_options.delimiter)?;
         minify_options.minify_file(file_path, new_path)?;
         Ok(())
     }

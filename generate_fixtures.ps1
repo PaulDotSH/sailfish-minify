@@ -18,6 +18,18 @@ Write-File "raw_html.stpl" @'
   <%= html %>
 </div>
 '@
+Write-File "custom_delimiter.stpl" @'
+<div title="<#= name #>">
+  <p>Hello, <#= name #></p>
+  <p><## is literal</p>
+  <# include!("custom_delimiter_part.stpl"); #>
+</div>
+'@
+Write-File "custom_delimiter_part.stpl" @'
+<span>
+  <#= name.len() #>
+</span>
+'@
 Write-File "small.stpl" @'
 <!DOCTYPE html>
 <html>

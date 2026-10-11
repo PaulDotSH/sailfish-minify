@@ -284,7 +284,7 @@ fn bench_include_replace(c: &mut Criterion) {
         // Position-based replacements, exactly as the single-pass splice
         // consumes them.
         let ranges: Vec<(std::ops::Range<usize>, String)> =
-            sailfish_minify_core::extract_include_ranges(&template)
+            sailfish_minify_core::extract_include_ranges(&template, '%')
                 .into_iter()
                 .map(|(range, _full, name)| {
                     (range, format!(r#"<% include!("rewritten/{}.min"); %>"#, name))
@@ -406,8 +406,39 @@ fn bench_duplicate_includes(c: &mut Criterion) {
     group.finish();
 }
 
+/// A ~100 KiB template dense with sailfish blocks, written with `delimiter`.
+fn generate_template_with_blocks(delimiter: char) -> String {
+    let chunk = "<li class=\"item\">\n  <% if item.active { %>\n    <a href=\"<%= item.url %>\">  <%= item.name %>  </a>\n  <% } %>\n</li>\n";
+    chunk
+        .repeat(100 * 1024 / chunk.len())
+        .replace("<%", &format!("<{delimiter}"))
+        .replace("%>", &format!("{delimiter}>"))
+}
+
+/// Native minification of the same template with the default `%` delimiter and
+/// a custom `#` one, which first swaps every block for a placeholder.
+#[cfg(feature = "native-minifier")]
+fn bench_custom_delimiter(c: &mut Criterion) {
+    let mut group = c.benchmark_group("custom_delimiter");
+    for delimiter in ['%', '#'] {
+        let template = generate_template_with_blocks(delimiter);
+        let options = MinifyOptions { delimiter, ..MinifyOptions::default() };
+        group.throughput(Throughput::Bytes(template.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("native", delimiter),
+            &template,
+            |b, template| b.iter(|| black_box(options.minify_native(black_box(template)).unwrap())),
+        );
+    }
+    group.finish();
+}
+
+#[cfg(not(feature = "native-minifier"))]
+fn bench_custom_delimiter(_: &mut Criterion) {}
+
 criterion_group!(
     benches,
+    bench_custom_delimiter,
     bench_derive_input,
     bench_duplicate_includes,
     bench_template_sizes,

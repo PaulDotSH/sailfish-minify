@@ -1,7 +1,8 @@
 use sailfish_minify_core::{
     extract_includes, extract_template_path, get_minify_options_from_token_stream,
-    minify_file_and_components, parse_derive_input, replace_path_attribute, tmp_main_path,
-    Minifier, MinifyOptions, MINIFIER_INVOCATIONS,
+    extract_include_ranges, minify_file_and_components, parse_derive_input, protect_blocks,
+    replace_path_attribute, restore_blocks, tmp_main_path, Minifier, MinifyOptions,
+    MINIFIER_INVOCATIONS,
 };
 #[cfg(feature = "regex")]
 use sailfish_minify_core::get_include_regex;
@@ -263,7 +264,7 @@ fn test_native_minifier_minifies_file() {
         let output = dir.path().join("out.html");
         fs::write(&input, "<div>\n  <p>  Hello   world  </p>\n</div>").unwrap();
 
-        let options = MinifyOptions { minifier: Minifier::Native };
+        let options = MinifyOptions { minifier: Minifier::Native, ..MinifyOptions::default() };
         options.minify_file(&input, &output).unwrap();
 
         let minified = fs::read_to_string(&output).unwrap();
@@ -304,6 +305,69 @@ fn test_invalid_minifier_panics() {
         get_minify_options_from_token_stream(tokens, &mut options).is_err(),
         "unknown minifier should be an error, not a panic"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Custom Delimiters
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_derive_input_reads_delimiter() {
+    let tokens: proc_macro2::TokenStream =
+        r#"#[template(path = "foo.stpl", delimiter = '#')] struct Foo;"#.parse().unwrap();
+    assert_eq!(parse_derive_input(tokens).unwrap().minify_options.delimiter, '#');
+
+    let tokens: proc_macro2::TokenStream =
+        r#"#[template(path = "foo.stpl")] struct Foo;"#.parse().unwrap();
+    assert_eq!(parse_derive_input(tokens).unwrap().minify_options.delimiter, '%');
+}
+
+#[test]
+fn test_include_parser_uses_delimiter() {
+    let contents = r#"<div><# include!("a.stpl"); #><% include!("b.stpl"); %></div>"#;
+    let names: Vec<String> =
+        extract_include_ranges(contents, '#').into_iter().map(|(_, _, name)| name).collect();
+    assert_eq!(names, vec!["a.stpl"]);
+}
+
+#[test]
+fn test_protect_blocks_round_trips() {
+    let source = "<p><#= a #></p><## literal <# if x { #>y<# } #> <#- 'non-ascii é' #>";
+    let (protected, blocks) = protect_blocks(source, '#').unwrap();
+    assert_eq!(blocks.len(), 5, "four blocks and one `<##` escape");
+    assert!(!protected.contains("<#"), "every block should be hidden: {protected}");
+    assert_eq!(restore_blocks(&protected, source, &blocks), source);
+}
+
+#[test]
+fn test_protect_blocks_rejects_reserved_text() {
+    assert!(protect_blocks("<% sailfish-minify:0 %>", '#').is_err());
+}
+
+#[cfg(feature = "native-minifier")]
+#[test]
+fn test_custom_delimiter_minifies_and_rewrites_includes() {
+    with_minify_lock(|| {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("part.stpl"), "<span>\n  <#= x #>\n</span>\n").unwrap();
+        let main = dir.path().join("main.stpl");
+        fs::write(
+            &main,
+            "<div lang=\"<#= code #>\">\n  <p><#= name #></p>\n  <## kept\n  <# include!(\"part.stpl\"); #>\n</div>\n",
+        )
+        .unwrap();
+        let out = dir.path().join("main.stpl.min");
+
+        let options = MinifyOptions { delimiter: '#', ..MinifyOptions::default() };
+        minify_file_and_components(&main, &out, &options).unwrap();
+
+        let minified = fs::read_to_string(&out).unwrap();
+        assert!(
+            minified.starts_with("<div lang=\"<#= code #>\"><p><#= name #></p><## kept <# include!(\""),
+            "blocks, attribute quotes and the escape should survive; whitespace should collapse: {minified}"
+        );
+        assert!(minified.ends_with("part.stpl.min\"); #></div>"), "include should be rewritten: {minified}");
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +541,7 @@ fn test_only_referenced_template_copied() {
     let referenced = referenced_abs.strip_prefix(&cwd).unwrap().to_path_buf();
     let base = tempdir().unwrap();
 
-    copy_referenced_template_and_includes(&referenced, base.path()).unwrap();
+    copy_referenced_template_and_includes(&referenced, base.path(), '%').unwrap();
 
     assert_eq!(
         count_files(base.path()),

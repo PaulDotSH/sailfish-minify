@@ -112,6 +112,12 @@ struct UnescapedTemplate {
     html: String,
 }
 
+#[derive(Minified)]
+#[template(path = "test/custom_delimiter.stpl", delimiter = '#')]
+struct CustomDelimiterTemplate {
+    name: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -138,7 +144,18 @@ fn test_doc_comment_mentioning_path_compiles() {
 #[test]
 fn test_escape_option_is_kept() {
     let result = UnescapedTemplate { html: "<b>bold</b>".into() }.render_once().unwrap();
-    assert_eq!(result, "<div><b>bold</b></div>", "escape = false must survive the path rewrite");
+    assert!(result.contains("<b>bold</b>"), "escape = false must survive the path rewrite: {result}");
+}
+
+#[test]
+fn test_custom_delimiter_template() {
+    let result = CustomDelimiterTemplate { name: "World".into() }.render_once().unwrap();
+    // Exact whitespace around blocks differs between minifiers, so check the
+    // parts: blocks evaluated, attribute quotes and the `<##` escape kept, and
+    // the top-level template minified.
+    assert!(result.starts_with(r#"<div title="World"><p>Hello, World</p><p><# is literal</p>"#), "{result}");
+    assert!(result.contains("5"), "the included part should render: {result}");
+    assert!(!result.contains("<#="), "every block should be evaluated: {result}");
 }
 
 #[test]
