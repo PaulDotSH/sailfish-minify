@@ -195,10 +195,26 @@ pub fn replace_path_attribute(input: proc_macro2::TokenStream, new_path: &str) -
     }
 }
 
-/// Point the struct's `#[template(...)]` attribute at `new_path`.
+/// Point the struct's `#[template(...)]` attribute at `new_path`, keeping its
+/// other sailfish options (`escape`, `delimiter`, `rm_whitespace`, ...).
+///
+/// Rewrites the same attribute `template_path_from_attrs` reads: the first
+/// `#[template]` with a `path` key.
 pub fn set_template_path(item: &mut ItemStruct, new_path: &str) {
-    if let Some(attr) = item.attrs.iter_mut().find(|attr| attr.path().is_ident("template")) {
-        *attr = syn::parse_quote! { #[template(path = #new_path)] };
+    for attr in item.attrs.iter_mut().filter(|attr| attr.path().is_ident("template")) {
+        let Ok(mut args) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        else {
+            continue;
+        };
+        let Some(path_value) = args.iter_mut().find_map(|meta| match meta {
+            Meta::NameValue(nv) if nv.path.is_ident("path") => Some(&mut nv.value),
+            _ => None,
+        }) else {
+            continue;
+        };
+        *path_value = syn::parse_quote!(#new_path);
+        *attr = syn::parse_quote! { #[template(#args)] };
+        return;
     }
 }
 

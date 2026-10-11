@@ -123,6 +123,36 @@ fn test_replace_path_attribute_preserves_other_attrs() {
     assert_eq!(template_attr_path(&item), "out.stpl.min");
 }
 
+#[test]
+fn test_replace_path_attribute_keeps_sailfish_options() {
+    let input: proc_macro2::TokenStream = r#"
+        #[template(escape = false, path = "foo.stpl", delimiter = '#', rm_whitespace = true)]
+        struct Foo { name: String }
+    "#
+    .parse()
+    .unwrap();
+    let output = replace_path_attribute(input, "out.stpl.min");
+
+    let item: syn::ItemStruct = syn::parse2(output).unwrap();
+    let attr = item.attrs.iter().find(|a| a.path().is_ident("template")).unwrap();
+    let args = attr
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )
+        .unwrap();
+    let args: Vec<String> = args.iter().map(|meta| quote::quote!(#meta).to_string()).collect();
+    assert_eq!(
+        args,
+        vec![
+            "escape = false",
+            "path = \"out.stpl.min\"",
+            "delimiter = '#'",
+            "rm_whitespace = true",
+        ],
+        "only the path should change; the other options and their order are kept"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Include Regex Parsing
 // ---------------------------------------------------------------------------

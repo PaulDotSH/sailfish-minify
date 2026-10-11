@@ -106,6 +106,12 @@ struct RawBigWhitespaceTemplate {
     title: String,
 }
 
+#[derive(Minified)]
+#[template(path = "test/raw_html.stpl", escape = false)]
+struct UnescapedTemplate {
+    html: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -127,6 +133,12 @@ fn test_simple_template_contains_expected_content() {
 fn test_doc_comment_mentioning_path_compiles() {
     let result = DocCommentTemplate { name: "Doc".into() }.render_once().unwrap();
     assert!(result.contains("Hello, Doc"));
+}
+
+#[test]
+fn test_escape_option_is_kept() {
+    let result = UnescapedTemplate { html: "<b>bold</b>".into() }.render_once().unwrap();
+    assert_eq!(result, "<div><b>bold</b></div>", "escape = false must survive the path rewrite");
 }
 
 #[test]

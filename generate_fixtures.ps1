@@ -13,6 +13,11 @@ function Write-File([string]$name, [string]$content) {
 
 Write-File "empty.stpl" ""
 Write-File "simple.stpl" '<!DOCTYPE html><html><head><title>Simple</title></head><body><h1>Hello, <%= name %></h1></body></html>'
+Write-File "raw_html.stpl" @'
+<div>
+  <%= html %>
+</div>
+'@
 Write-File "small.stpl" @'
 <!DOCTYPE html>
 <html>
