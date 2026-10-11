@@ -11,8 +11,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::{fs, io};
-use syn::ItemStruct;
-use syn::Meta;
+use syn::punctuated::Punctuated;
+use syn::{Attribute, Expr, ExprLit, ItemStruct, Lit, Meta, Token};
 
 #[cfg(feature = "regex")]
 const INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *include!\s*\(\s*"([^"]+)"\s*\)\s*;\s*%>"#;
@@ -20,8 +20,6 @@ const INCLUDE_REPLACE_TOKEN_REGEX: &str = r#"<% *include!\s*\(\s*"([^"]+)"\s*\)\
 // Cache Regex compilation
 #[cfg(feature = "regex")]
 static INCLUDE_REGEX_CACHE: OnceLock<Regex> = OnceLock::new();
-#[cfg(feature = "regex")]
-static TEMPLATE_PATH_REGEX_CACHE: OnceLock<Regex> = OnceLock::new();
 
 // Global cache to track processed components across all template compilations
 //
@@ -43,13 +41,6 @@ fn get_global_cache() -> &'static Mutex<HashMap<PathBuf, PathBuf>> {
 #[cfg(feature = "regex")]
 pub fn get_include_regex() -> &'static Regex {
     INCLUDE_REGEX_CACHE.get_or_init(|| Regex::new(INCLUDE_REPLACE_TOKEN_REGEX).unwrap())
-}
-
-#[cfg(feature = "regex")]
-fn get_template_path_regex() -> &'static Regex {
-    TEMPLATE_PATH_REGEX_CACHE.get_or_init(|| {
-        Regex::new(r#"#\[template\([^)]*path\s*=\s*"([^"]+)"[^)]*\)\]"#).unwrap()
-    })
 }
 
 /// Base directory where minified templates are written.
@@ -106,17 +97,50 @@ fn find_executable_in_path(name: &str) -> Option<String> {
     None
 }
 
-/// Extract the template file path from a `#[template(path = "...")]` attribute.
+/// Everything `#[derive(TemplateSimple)]` needs from its input, read from a
+/// single `syn` parse of the struct.
+pub struct DeriveInput {
+    pub item: ItemStruct,
+    /// Source template, from `#[template(path = "...")]`.
+    pub template_path: PathBuf,
+    /// Minifier selection, from `#[min_with(...)]`.
+    pub minify_options: MinifyOptions,
+}
+
+/// Parse the derive input once and read the template path and minifier
+/// options from its attributes.
+pub fn parse_derive_input(tokens: proc_macro2::TokenStream) -> syn::Result<DeriveInput> {
+    let item = syn::parse2::<ItemStruct>(tokens)?;
+    let template_path = template_path_from_attrs(&item.attrs)?;
+    let minify_options = minify_options_from_attrs(&item.attrs)?;
+    Ok(DeriveInput { item, template_path, minify_options })
+}
+
+/// Extract the template file path from a `#[template(path = "...")]` attribute
+/// in the source of a struct.
 ///
 /// Relative paths are resolved against `./templates`, absolute paths are used
 /// as-is.
+///
+/// The derive uses `parse_derive_input`; this is kept for the unit tests in
+/// `sailfish-minify-core`.
+#[allow(dead_code)]
 pub fn extract_template_path(str: &str) -> syn::Result<PathBuf> {
-    let path = extract_template_path_str(str).ok_or_else(|| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Cannot find template path in struct attributes. Make sure to use #[template(path = \"...\")] for minified templates",
-        )
-    })?;
+    let item = syn::parse_str::<ItemStruct>(str)?;
+    template_path_from_attrs(&item.attrs)
+}
+
+fn template_path_from_attrs(attrs: &[Attribute]) -> syn::Result<PathBuf> {
+    let path = attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("template"))
+        .find_map(template_attr_path)
+        .ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Cannot find template path in struct attributes. Make sure to use #[template(path = \"...\")] for minified templates",
+            )
+        })?;
 
     let path = Path::new(&path);
     if path.is_absolute() {
@@ -126,25 +150,18 @@ pub fn extract_template_path(str: &str) -> syn::Result<PathBuf> {
     }
 }
 
-#[cfg(feature = "regex")]
-fn extract_template_path_str(str: &str) -> Option<String> {
-    let template_regex = get_template_path_regex();
-    template_regex
-        .captures(str)
-        .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str().to_string())
-}
-
-/// Dependency-free fallback for `extract_template_path_str`, matching
-/// `path\s*=\s*"([^"]+)"` anywhere in the attribute string.
-#[cfg(not(feature = "regex"))]
-fn extract_template_path_str(str: &str) -> Option<String> {
-    let marker = str.find("path")?;
-    let rest = str[marker + "path".len()..].trim_start();
-    let rest = rest.strip_prefix('=')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+/// The `path = "..."` value of a `#[template(...)]` attribute, if it has one.
+fn template_attr_path(attr: &Attribute) -> Option<String> {
+    let args = attr
+        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .ok()?;
+    args.into_iter().find_map(|meta| match meta {
+        Meta::NameValue(nv) if nv.path.is_ident("path") => match nv.value {
+            Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => Some(s.value()),
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 /// Compute the minified output path for a source template: the same relative
@@ -163,21 +180,25 @@ pub fn modify_template_path(path: &Path) -> PathBuf {
 }
 
 /// Rewrite the `#[template(path = "...")]` attribute to point at the minified file.
+///
+/// The derive uses `set_template_path`; this is kept for the unit tests in
+/// `sailfish-minify-core`.
+#[allow(dead_code)]
 pub fn replace_path_attribute(input: proc_macro2::TokenStream, new_path: &str) -> proc_macro2::TokenStream {
     let mut struct_item = syn::parse2::<ItemStruct>(input).unwrap_or_else(|_| {
         panic!("sailfish-minify: expected a struct for #[derive(TemplateSimple)]")
     });
-
-    for attr in &mut struct_item.attrs {
-        if attr.path().is_ident("template") {
-            let new_attr = syn::parse_quote! { #[template(path = #new_path)] };
-            *attr = new_attr;
-            break;
-        }
-    }
+    set_template_path(&mut struct_item, new_path);
 
     quote! {
         #struct_item
+    }
+}
+
+/// Point the struct's `#[template(...)]` attribute at `new_path`.
+pub fn set_template_path(item: &mut ItemStruct, new_path: &str) {
+    if let Some(attr) = item.attrs.iter_mut().find(|attr| attr.path().is_ident("template")) {
+        *attr = syn::parse_quote! { #[template(path = #new_path)] };
     }
 }
 
@@ -457,13 +478,26 @@ impl MinifyOptions {
 
 /// Parse `#[min_with(...)]` attributes from a struct's token stream and apply
 /// them to the given `MinifyOptions`.
+///
+/// The derive uses `parse_derive_input`; this is kept for the unit tests in
+/// `sailfish-minify-core`.
+#[allow(dead_code)]
 pub fn get_minify_options_from_token_stream(
     tokens: proc_macro2::TokenStream,
     options: &mut MinifyOptions,
 ) -> syn::Result<()> {
     let struct_item = syn::parse2::<ItemStruct>(tokens)?;
+    apply_minify_attrs(&struct_item.attrs, options)
+}
 
-    for attr in &struct_item.attrs {
+fn minify_options_from_attrs(attrs: &[Attribute]) -> syn::Result<MinifyOptions> {
+    let mut options = MinifyOptions::default();
+    apply_minify_attrs(attrs, &mut options)?;
+    Ok(options)
+}
+
+fn apply_minify_attrs(attrs: &[Attribute], options: &mut MinifyOptions) -> syn::Result<()> {
+    for attr in attrs {
         if !attr.path().is_ident("min_with") {
             continue;
         }
@@ -534,9 +568,9 @@ pub fn splice_include_replacements(
     out
 }
 
-/// Per-include processing outcome: the byte range of the `<% include!(...) %>`
-/// token plus its rewritten text, or the error from minifying the component.
-type IncludeRewriteResult = Result<(Range<usize>, String), Box<dyn std::error::Error + Send + Sync>>;
+/// Per-component processing outcome: the rewritten `<% include!(...) %>` text,
+/// or the error from minifying the component.
+type IncludeRewriteResult = Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
 #[allow(dead_code)]
 fn minify_file_and_components_internal(
@@ -547,12 +581,10 @@ fn minify_file_and_components_internal(
 ) -> io::Result<()> {
     let canonical_path = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
 
-    // Check local cache first (for same template)
-    {
-        let processed = processed_files.lock().unwrap();
-        if processed.contains(&canonical_path) {
-            return Ok(());
-        }
+    // Claim the file for this template. Checking and inserting under one lock
+    // means two parallel branches can never both minify (and write) it.
+    if !processed_files.lock().unwrap().insert(canonical_path.clone()) {
+        return Ok(());
     }
 
     {
@@ -562,12 +594,9 @@ fn minify_file_and_components_internal(
                 create_dir_all(new_path.parent().unwrap()).expect("Cannot create dir");
                 fs::copy(cached_output_path, new_path)?;
             }
-            processed_files.lock().unwrap().insert(canonical_path);
             return Ok(());
         }
     }
-
-    processed_files.lock().unwrap().insert(canonical_path.clone());
 
     let mut input_file = File::open(file_path)?;
     let mut contents = String::new();
@@ -576,13 +605,25 @@ fn minify_file_and_components_internal(
     let includes = extract_include_ranges(&contents);
 
     if !includes.is_empty() {
+        // A component included many times (an icon, a button) only needs to
+        // be minified and rewritten once. `slot_of[i]` maps include `i` to its
+        // file name's index in `unique_names`, kept in first-seen order.
+        let mut unique_names: Vec<&str> = Vec::new();
+        let mut slot_by_name: HashMap<&str, usize> = HashMap::new();
+        let slot_of: Vec<usize> = includes
+            .iter()
+            .map(|(_, _, file_name)| {
+                *slot_by_name.entry(file_name.as_str()).or_insert_with(|| {
+                    unique_names.push(file_name.as_str());
+                    unique_names.len() - 1
+                })
+            })
+            .collect();
+
         let parent_output_dir = new_path.parent().unwrap().to_path_buf();
         let include_results: Vec<IncludeRewriteResult> =
-            includes.par_iter().map(|(range, _original_str, file_name)| {
-                let range = range.clone();
-                let file_name = file_name.clone(); // file.stpl
-
-                let component_file_path = file_path.parent().unwrap().join(&file_name);
+            unique_names.par_iter().map(|&file_name| {
+                let component_file_path = file_path.parent().unwrap().join(file_name);
 
                 let mut child_new_path = tmp_main_path().to_path_buf();
                 if let Some(parent) = file_path.parent() {
@@ -606,22 +647,28 @@ fn minify_file_and_components_internal(
                     .unwrap_or_else(|| child_new_path.clone());
                 let new_include = format!(r#"<% include!("{}"); %>"#, relative_path.to_string_lossy());
 
-                Ok((range, new_include))
+                Ok(new_include)
             }).collect();
 
-        // Fold the per-include results into position-sorted replacements. The
-        // byte ranges are already in source order (extraction is ordered and
-        // `par_iter` preserves it), so the splice below needs a single pass.
-        let mut replacements = Vec::with_capacity(include_results.len());
+        let mut rewrites = Vec::with_capacity(include_results.len());
         for result in include_results {
             match result {
-                Ok((range, new_include)) => replacements.push((range, new_include)),
+                Ok(new_include) => rewrites.push(new_include),
                 Err(e) => {
                     eprintln!("Error processing component: {}", e);
                     return Err(io::Error::other("Component processing failed"));
                 }
             }
         }
+
+        // Pair every include's byte range with its file's rewrite. The ranges
+        // are already in source order (extraction is ordered), so the splice
+        // below needs a single pass.
+        let replacements: Vec<(Range<usize>, String)> = includes
+            .iter()
+            .zip(&slot_of)
+            .map(|((range, _, _), &slot)| (range.clone(), rewrites[slot].clone()))
+            .collect();
 
         contents = splice_include_replacements(&contents, replacements);
     }

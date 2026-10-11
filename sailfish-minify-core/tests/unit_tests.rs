@@ -1,7 +1,7 @@
 use sailfish_minify_core::{
     extract_includes, extract_template_path, get_minify_options_from_token_stream,
-    minify_file_and_components, replace_path_attribute, tmp_main_path, Minifier, MinifyOptions,
-    MINIFIER_INVOCATIONS,
+    minify_file_and_components, parse_derive_input, replace_path_attribute, tmp_main_path,
+    Minifier, MinifyOptions, MINIFIER_INVOCATIONS,
 };
 #[cfg(feature = "regex")]
 use sailfish_minify_core::get_include_regex;
@@ -46,6 +46,34 @@ fn test_extract_template_path_nested() {
 fn test_extract_template_path_missing_panics() {
     let result = extract_template_path("struct Foo { name: String }");
     assert!(result.is_err(), "missing #[template] attribute should be an error, not a panic");
+}
+
+#[test]
+fn test_extract_template_path_ignores_doc_comments() {
+    // Doc comments become `#[doc = "..."]` attributes ahead of `#[template]`,
+    // so a doc mentioning "path" must not be mistaken for the attribute.
+    let path = extract_template_path(
+        r#"/// Renders the path breadcrumbs.
+        #[template(path = "foo.stpl")] struct Foo;"#,
+    )
+    .unwrap();
+    assert_eq!(path, Path::new("./templates").join("foo.stpl"));
+}
+
+#[test]
+fn test_parse_derive_input_reads_all_attributes() {
+    let tokens: proc_macro2::TokenStream = r#"
+        /// Uses a custom path.
+        #[derive(Debug)]
+        #[min_with(Custom("my-minifier"))]
+        #[template(rm_whitespace = true, path = "sub/bar.stpl")]
+        struct Foo { path: String }
+    "#
+    .parse()
+    .unwrap();
+    let input = parse_derive_input(tokens).unwrap();
+    assert_eq!(input.template_path, Path::new("./templates").join("sub/bar.stpl"));
+    assert_eq!(input.minify_options.minifier, Minifier::Custom("my-minifier".to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +318,31 @@ fn test_cache_key_is_canonical_path() {
             MINIFIER_INVOCATIONS.load(Ordering::SeqCst),
             1,
             "relative and absolute paths to the same file should share a cache entry"
+        );
+    });
+}
+
+#[test]
+fn test_repeated_include_minified_once() {
+    with_minify_lock(|| {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("icon.stpl"), "<i> x </i>").unwrap();
+        let main = dir.path().join("main.stpl");
+        fs::write(&main, r#"<p><% include!("icon.stpl"); %></p>"#.repeat(20)).unwrap();
+        let out = dir.path().join("main.stpl.min");
+
+        minify_file_and_components(&main, &out, &MinifyOptions::default()).unwrap();
+        assert_eq!(
+            MINIFIER_INVOCATIONS.load(Ordering::SeqCst),
+            2,
+            "a component included many times should be minified once, plus the parent"
+        );
+
+        let minified = fs::read_to_string(&out).unwrap();
+        assert_eq!(minified.matches("include!").count(), 20, "every include should be kept");
+        assert!(
+            !minified.contains(r#"include!("icon.stpl")"#),
+            "every include should be rewritten to the minified component"
         );
     });
 }

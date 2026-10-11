@@ -11,6 +11,13 @@ struct SimpleTemplate {
     name: String,
 }
 
+/// Doc comments mentioning the path must not confuse template lookup.
+#[derive(Minified)]
+#[template(path = "test/simple.stpl")]
+struct DocCommentTemplate {
+    name: String,
+}
+
 #[cfg(feature = "native-minifier")]
 #[derive(Minified)]
 #[min_with(Native)]
@@ -114,6 +121,12 @@ fn test_simple_template_renders_minified() {
 fn test_simple_template_contains_expected_content() {
     let result = SimpleTemplate { name: "World".into() }.render_once().unwrap();
     assert!(result.contains("World"));
+}
+
+#[test]
+fn test_doc_comment_mentioning_path_compiles() {
+    let result = DocCommentTemplate { name: "Doc".into() }.render_once().unwrap();
+    assert!(result.contains("Hello, Doc"));
 }
 
 #[test]

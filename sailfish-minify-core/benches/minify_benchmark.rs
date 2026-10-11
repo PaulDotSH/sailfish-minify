@@ -1,7 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
+use quote::ToTokens;
 use sailfish_minify_core::{
-    extract_includes_manual, minify_file_and_components, splice_include_replacements,
-    MinifyOptions,
+    extract_includes_manual, minify_file_and_components, modify_template_path,
+    parse_derive_input, set_template_path, splice_include_replacements, MinifyOptions,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -328,8 +331,85 @@ fn bench_include_replace(c: &mut Criterion) {
     group.finish();
 }
 
+/// A `#[derive(TemplateSimple)]` input with `fields` documented fields, as the
+/// proc macro receives it.
+fn derive_input_tokens(fields: usize) -> proc_macro2::TokenStream {
+    let mut s = String::from(
+        "/// A page rendered by sailfish.
+#[derive(Debug, Clone)]
+#[min_with(Native)]
+#[template(path = \"pages/index.stpl\")]
+pub struct Page {
+",
+    );
+    for i in 0..fields {
+        s.push_str(&format!("    /// Field number {i}.
+    pub field_{i}: Vec<Option<String>>,
+"));
+    }
+    s.push('}');
+    s.parse().unwrap()
+}
+
+/// Everything `derive_template_simple` does to its input before minifying and
+/// handing it to sailfish: find the template path, read `#[min_with]`, and
+/// rewrite the path attribute.
+fn process_derive_input(tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let mut input = parse_derive_input(tokens).unwrap();
+    let new_path = modify_template_path(&input.template_path);
+    black_box(&input.minify_options);
+    set_template_path(&mut input.item, new_path.to_str().unwrap());
+    input.item.into_token_stream()
+}
+
+fn bench_derive_input(c: &mut Criterion) {
+    let mut group = c.benchmark_group("derive_input");
+    for fields in [1, 10, 50] {
+        let tokens = derive_input_tokens(fields);
+        group.bench_with_input(BenchmarkId::new("fields", fields), &tokens, |b, tokens| {
+            b.iter_batched(|| tokens.clone(), process_derive_input, BatchSize::SmallInput)
+        });
+    }
+    group.finish();
+}
+
+/// A template including the same component `count` times, e.g. an icon or a
+/// button used throughout a page. Only the minification is timed; the temp dir
+/// setup and teardown are excluded.
+fn bench_duplicate_includes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("duplicate_includes");
+    for count in [1, 10, 50, 200] {
+        group.bench_with_input(BenchmarkId::new("count", count), &count, |b, &count| {
+            b.iter_batched(
+                || {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::write(dir.path().join("icon.stpl"), "<i class=\"icon\"> x </i>")
+                        .unwrap();
+                    let main = "<span><% include!(\"icon.stpl\"); %></span>
+".repeat(count);
+                    std::fs::write(dir.path().join("main.stpl"), main).unwrap();
+                    dir
+                },
+                |dir| {
+                    minify_file_and_components(
+                        &dir.path().join("main.stpl"),
+                        &dir.path().join("out.min"),
+                        &MinifyOptions::default(),
+                    )
+                    .unwrap();
+                    dir
+                },
+                BatchSize::PerIteration,
+            )
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_derive_input,
+    bench_duplicate_includes,
     bench_template_sizes,
     bench_include_depth,
     bench_parallel_includes,
