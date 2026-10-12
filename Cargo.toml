@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "sailfish-minify"
-version = "0.11.4"
+version = "0.11.5"
 authors = ["Abrudan Paul - Andrei <paulandreiabrudan@proton.me>"]
 description = "Hacky but simple minification support for sailfish, using html-minifier by default"
 homepage = "https://github.com/pauldotsh/sailfish-minify"
