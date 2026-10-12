@@ -176,6 +176,13 @@ fn test_include_regex_with_whitespace() {
 }
 
 #[test]
+fn test_include_argument_escapes_are_unescaped() {
+    // Sailfish reads the argument as a Rust string literal.
+    let contents = r#"<% include!("sub\\part.stpl"); %><% include!("plain.stpl"); %>"#;
+    assert_eq!(extract_includes(contents), vec!["sub\\part.stpl", "plain.stpl"]);
+}
+
+#[test]
 fn test_include_regex_no_match_on_normal_template_code() {
     let contents = r#"<% for item in items { %><div><%= item %></div><% } %>"#;
     assert!(extract_includes(contents).is_empty());
@@ -437,6 +444,35 @@ fn test_repeated_include_minified_once() {
         assert!(
             !minified.contains(r#"include!("icon.stpl")"#),
             "every include should be rewritten to the minified component"
+        );
+    });
+}
+
+#[test]
+fn test_subfolder_include_rewritten_as_valid_literal() {
+    with_minify_lock(|| {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub").join("part.stpl"), "<p>part</p>").unwrap();
+        let main = dir.path().join("main.stpl");
+        fs::write(&main, r#"<div><% include!("sub/part.stpl"); %></div>"#).unwrap();
+        let out = dir.path().join("main.stpl.min");
+
+        minify_file_and_components(&main, &out, &MinifyOptions::default()).unwrap();
+
+        // Sailfish parses the argument as a Rust string literal; on Windows
+        // the rewritten path holds `\`, which must be escaped.
+        let minified = fs::read_to_string(&out).unwrap();
+        let arg = minified
+            .split("include!(")
+            .nth(1)
+            .and_then(|rest| rest.split(");").next())
+            .unwrap_or_else(|| panic!("no include in {minified}"));
+        let lit: syn::LitStr = syn::parse_str(arg)
+            .unwrap_or_else(|e| panic!("{arg} is not a valid Rust string literal: {e}"));
+        assert!(
+            dir.path().join(lit.value()).is_file(),
+            "{arg} should point at the minified component"
         );
     });
 }

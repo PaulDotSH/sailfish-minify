@@ -111,4 +111,42 @@ $bigLines += @(
 )
 Write-File "big_whitespace.stpl" ($bigLines -join "`n")
 
+# Includes across subfolders. Rewritten include paths contain `\` on Windows,
+# which must be escaped in the Rust string literal sailfish parses.
+New-Item -ItemType Directory -Force -Path (Join-Path $testDir "sub\deeper") | Out-Null
+Write-File "subdir_includes.stpl" @'
+<main>
+  <% include!("sub/page.stpl"); %>
+  <% include!("shared_footer.stpl"); %>
+</main>
+'@
+Write-File "sub\page.stpl" @'
+<section>
+  <% include!("part.stpl"); %>
+  <% include!("deeper/leaf.stpl"); %>
+  <% include!("../shared_footer.stpl"); %>
+</section>
+'@
+Write-File "sub\part.stpl" @'
+<p>
+  part
+</p>
+'@
+Write-File "sub\deeper\leaf.stpl" @'
+<i>
+  leaf
+</i>
+'@
+Write-File "shared_footer.stpl" @'
+<footer>
+  shared
+</footer>
+'@
+# Windows-style include argument: `\\` is an escaped backslash in the literal.
+Write-File "backslash_include.stpl" @'
+<div>
+  <% include!("sub\\part.stpl"); %>
+</div>
+'@
+
 Write-Host "Regenerated test fixtures in templates/test/"

@@ -118,6 +118,27 @@ struct CustomDelimiterTemplate {
     name: String,
 }
 
+#[derive(Minified)]
+#[template(path = "test/subdir_includes.stpl")]
+struct SubdirIncludesTemplate {
+    _marker: bool,
+}
+
+#[derive(Minified)]
+#[template(path = "test/sub/page.stpl")]
+struct TemplateInSubdir {
+    _marker: bool,
+}
+
+// `include!("sub\\part.stpl")` names `sub\part.stpl`, a nested file only on
+// Windows; elsewhere sailfish itself would look for a file named that.
+#[cfg(windows)]
+#[derive(Minified)]
+#[template(path = "test/backslash_include.stpl")]
+struct BackslashIncludeTemplate {
+    _marker: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -156,6 +177,33 @@ fn test_custom_delimiter_template() {
     assert!(result.starts_with(r#"<div title="World"><p>Hello, World</p><p><# is literal</p>"#), "{result}");
     assert!(result.contains("5"), "the included part should render: {result}");
     assert!(!result.contains("<#="), "every block should be evaluated: {result}");
+}
+
+#[test]
+fn test_includes_across_subfolders() {
+    // Covers a subfolder include, one nested two levels deep, a `../` include,
+    // and the same component reached through two different relative paths.
+    let result = SubdirIncludesTemplate { _marker: true }.render_once().unwrap();
+    let positions: Vec<usize> = ["part", "leaf", "shared"]
+        .iter()
+        .map(|text| result.find(text).unwrap_or_else(|| panic!("missing {text:?}: {result}")))
+        .collect();
+    assert!(positions.is_sorted(), "includes should render in order: {result}");
+    assert_eq!(result.matches("<footer>").count(), 2, "{result}");
+}
+
+#[test]
+fn test_template_in_subfolder_with_parent_include() {
+    let result = TemplateInSubdir { _marker: true }.render_once().unwrap();
+    assert!(result.contains("part") && result.contains("leaf"), "{result}");
+    assert!(result.contains("shared"), "the `../` include should render: {result}");
+}
+
+#[cfg(windows)]
+#[test]
+fn test_backslash_include_path() {
+    let result = BackslashIncludeTemplate { _marker: true }.render_once().unwrap();
+    assert!(result.contains("part"), "{result}");
 }
 
 #[test]

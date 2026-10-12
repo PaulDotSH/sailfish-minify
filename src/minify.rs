@@ -252,7 +252,7 @@ pub fn extract_include_ranges(
             .captures_iter(contents)
             .map(|cap| {
                 let m = cap.get(0).unwrap();
-                (m.range(), cap[0].to_string(), cap[1].to_string())
+                (m.range(), cap[0].to_string(), include_arg_value(&cap[1]))
             })
             .collect();
     }
@@ -357,7 +357,7 @@ fn extract_includes_manual_ranges(
             // offset in `contents` is `contents.len() - rest.len()`, so the
             // match ends just past it.
             let end = contents.len() - rest.len() + close.len();
-            results.push((start..end, contents[start..end].to_string(), file_name.to_string()));
+            results.push((start..end, contents[start..end].to_string(), include_arg_value(file_name)));
             pos = end;
         } else {
             pos = start + open.len();
@@ -365,6 +365,18 @@ fn extract_includes_manual_ranges(
     }
 
     results
+}
+
+/// The file name an `include!("...")` argument refers to. Sailfish reads the
+/// argument as a Rust string literal, so `"sub\\part.stpl"` (as Windows users
+/// may write it) means `sub\part.stpl`.
+fn include_arg_value(raw: &str) -> String {
+    if !raw.contains('\\') {
+        return raw.to_owned();
+    }
+    syn::parse_str::<syn::LitStr>(&format!("\"{raw}\""))
+        .map(|lit| lit.value())
+        .unwrap_or_else(|_| raw.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -804,11 +816,14 @@ fn minify_file_and_components_internal(
                 // Rewrite the include to a path relative to the minified parent.
                 // Relative (rather than absolute) paths are required on Windows:
                 // sailfish-compiler strips the first character of absolute include
-                // paths, which mangles `C:\...` style paths.
+                // paths, which mangles `C:\...` style paths. Sailfish parses the
+                // argument as a Rust string literal, so it is written escaped
+                // (`{:?}`): Windows separators would otherwise be read as
+                // escapes (`sub\page.stpl.min`).
                 let relative_path = pathdiff::diff_paths(&child_new_path, &parent_output_dir)
                     .unwrap_or_else(|| child_new_path.clone());
                 let new_include = format!(
-                    r#"<{delimiter} include!("{}"); {delimiter}>"#,
+                    "<{delimiter} include!({:?}); {delimiter}>",
                     relative_path.to_string_lossy()
                 );
 
