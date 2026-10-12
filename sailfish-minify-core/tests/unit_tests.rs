@@ -1,16 +1,14 @@
 use sailfish_minify_core::{
     extract_includes, extract_template_path, get_minify_options_from_token_stream,
-    extract_include_ranges, minify_file_and_components, parse_derive_input, protect_blocks,
-    replace_path_attribute, restore_blocks, tmp_main_path, Minifier, MinifyOptions,
-    MINIFIER_INVOCATIONS,
+    extract_include_ranges, minify_file_and_components, mirror_path, modify_template_path,
+    parse_derive_input, protect_blocks, replace_path_attribute, restore_blocks, tmp_main_path,
+    Minifier, MinifyOptions, MINIFIER_INVOCATIONS,
 };
 #[cfg(feature = "regex")]
 use sailfish_minify_core::get_include_regex;
 use sailfish_minify_core::extract_includes_manual;
 #[cfg(not(feature = "minify-components"))]
 use sailfish_minify_core::copy_referenced_template_and_includes;
-#[cfg(feature = "minify-components")]
-use sailfish_minify_core::modify_template_path;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -584,8 +582,7 @@ fn test_only_referenced_template_copied() {
         1,
         "only the referenced template should be copied to the temp dir"
     );
-    let expected_dest: std::path::PathBuf = base.path().join(&referenced);
-    assert!(expected_dest.exists());
+    assert!(mirror_path(base.path(), &referenced).exists());
 }
 
 #[cfg(feature = "minify-components")]
@@ -595,4 +592,60 @@ fn test_modify_template_path_places_file_in_tmp() {
     let new_path = modify_template_path(source);
     assert!(new_path.starts_with(tmp_main_path()));
     assert!(new_path.to_string_lossy().ends_with("simple.stpl.min"));
+}
+
+#[test]
+fn test_mirror_path_resolves_and_stays_in_base() {
+    let base = Path::new("base");
+    assert_eq!(mirror_path(base, Path::new("a/../b.stpl")), mirror_path(base, Path::new("b.stpl")));
+    assert!(mirror_path(base, Path::new("../../../../../../../../x.stpl")).starts_with(base));
+
+    let absolute = std::env::current_dir().unwrap().join("templates").join("x.stpl");
+    let new_path = modify_template_path(&absolute);
+    assert!(new_path.starts_with(tmp_main_path()), "{new_path:?}");
+    assert!(new_path.ends_with(Path::new("templates").join("x.stpl.min")), "{new_path:?}");
+}
+
+#[test]
+fn test_same_relative_template_in_two_crates_gets_separate_outputs() {
+    with_minify_lock(|| {
+        // Two crates, both with `templates/index.stpl` including `part.stpl`.
+        let crates = [tempdir().unwrap(), tempdir().unwrap()];
+        let mut outputs = Vec::new();
+        for (name, dir) in ["first", "second"].iter().zip(&crates) {
+            let templates = dir.path().join("templates");
+            fs::create_dir_all(&templates).unwrap();
+            fs::write(templates.join("part.stpl"), format!("<b>{name}</b>")).unwrap();
+            let index = templates.join("index.stpl");
+            fs::write(&index, r#"<div><% include!("part.stpl"); %></div>"#).unwrap();
+
+            let out = modify_template_path(&index);
+            minify_file_and_components(&index, &out, &MinifyOptions::default()).unwrap();
+            outputs.push(out);
+        }
+
+        assert_ne!(outputs[0], outputs[1], "each crate should get its own temp file");
+        for (name, out) in ["first", "second"].iter().zip(&outputs) {
+            let part = out.with_file_name("part.stpl.min");
+            assert_eq!(fs::read_to_string(part).unwrap(), format!("<b>{name}</b>"));
+        }
+    });
+}
+
+#[test]
+fn test_absolute_template_writes_nothing_next_to_source() {
+    with_minify_lock(|| {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub").join("part.stpl"), "<p>part</p>").unwrap();
+        let main = dir.path().join("main.stpl");
+        fs::write(&main, r#"<div><% include!("sub/part.stpl"); %></div>"#).unwrap();
+
+        let out = modify_template_path(&main);
+        minify_file_and_components(&main, &out, &MinifyOptions::default()).unwrap();
+
+        assert!(out.starts_with(tmp_main_path()), "{out:?}");
+        assert!(!dir.path().join("sub").join("part.stpl.min").exists(), "no output next to the source");
+        assert!(out.parent().unwrap().join("sub").join("part.stpl.min").is_file());
+    });
 }

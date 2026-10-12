@@ -4,10 +4,11 @@ use rayon::prelude::*;
 use regex::Regex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{create_dir_all, File};
 use std::io::Read;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -168,19 +169,50 @@ fn template_attr_lit(attrs: &[Attribute], key: &str) -> Option<Lit> {
         })
 }
 
-/// Compute the minified output path for a source template: the same relative
-/// structure under `tmp_main_path()`, with a `.min` suffix on the file name.
+/// Compute the minified output path for a source template: its full path
+/// mirrored under `tmp_main_path()` (see `mirror_path`), with a `.min` suffix
+/// on the file name.
 pub fn modify_template_path(path: &Path) -> PathBuf {
-    let mut new_path = tmp_main_path().to_path_buf();
+    let mut new_path = mirror_path(tmp_main_path(), path).into_os_string();
+    new_path.push(".min");
+    new_path.into()
+}
 
-    if let Some(parent) = path.parent() {
-        new_path.push(parent);
+/// Where `path` goes under `base`: its absolute path, with `.` and `..`
+/// resolved, recreated beneath `base` (`C:\app\a.stpl` becomes
+/// `base\C\app\a.stpl`, `/app/a.stpl` becomes `base/app/a.stpl`).
+///
+/// Using the full path keeps the files of different crates that share a
+/// relative template path apart, keeps absolute template paths inside `base`,
+/// and preserves the relative paths between a template and its includes.
+pub fn mirror_path(base: &Path, path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut mirrored = base.to_path_buf();
+    // Path parts after the root; `..` pops one, never reaching above the root.
+    let mut parts: Vec<&OsStr> = Vec::new();
+
+    for component in absolute.components() {
+        match component {
+            // A Windows prefix only ever comes first.
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                    mirrored.push(char::from(letter).to_string());
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    mirrored.extend([OsStr::new("UNC"), server, share]);
+                }
+                Prefix::Verbatim(name) | Prefix::DeviceNS(name) => mirrored.push(name),
+            },
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(name) => parts.push(name),
+        }
     }
 
-    if let Some(file_name) = path.file_name() {
-        new_path.push(format!("{}.min", file_name.to_str().unwrap()));
-    }
-    new_path
+    mirrored.extend(parts);
+    mirrored
 }
 
 /// Rewrite the `#[template(path = "...")]` attribute to point at the minified file.
@@ -798,12 +830,7 @@ fn minify_file_and_components_internal(
         let include_results: Vec<IncludeRewriteResult> =
             unique_names.par_iter().map(|&file_name| {
                 let component_file_path = file_path.parent().unwrap().join(file_name);
-
-                let mut child_new_path = tmp_main_path().to_path_buf();
-                if let Some(parent) = file_path.parent() {
-                    child_new_path.push(parent);
-                }
-                child_new_path.push(format!("{}.min", file_name));
+                let child_new_path = modify_template_path(&component_file_path);
 
                 minify_file_and_components_internal(
                     &component_file_path,
@@ -933,7 +960,7 @@ fn copy_referenced_template_and_includes_inner(
         return Ok(());
     }
 
-    let destination = base.join(source);
+    let destination = mirror_path(base, source);
     if let Some(parent) = destination.parent() {
         create_dir_all(parent)?;
     }
