@@ -139,6 +139,26 @@ struct BackslashIncludeTemplate {
     _marker: bool,
 }
 
+// Found through `template_dirs` in the crate's sailfish.toml.
+#[derive(Minified)]
+#[template(path = "test/alt_only.stpl")]
+struct TemplateDirsTemplate {
+    name: String,
+}
+
+// In both `templates_alt/` and `templates/`; sailfish picks the former.
+#[derive(Minified)]
+#[template(path = "test/shadowed.stpl")]
+struct ShadowedTemplate {
+    _marker: bool,
+}
+
+#[derive(RawTemplateSimple)]
+#[template(path = "test/shadowed.stpl")]
+struct RawShadowedTemplate {
+    _marker: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -371,4 +391,21 @@ fn test_big_whitespace_template_content_preserved() {
     );
     assert!(!minified.contains("  "), "minified output should have no double spaces");
     assert!(!minified.starts_with('\n'));
+}
+
+#[test]
+fn test_template_dirs_from_sailfish_toml() {
+    let result = TemplateDirsTemplate { name: "World".into() }.render_once().unwrap();
+    assert!(result.contains("<p>Hello, World</p>"), "{result}");
+    assert!(result.contains("alt part"), "the include next to it should render: {result}");
+    #[cfg(feature = "minify-components")]
+    assert!(!result.contains("  "), "{result}");
+}
+
+#[test]
+fn test_template_dirs_take_precedence_like_sailfish() {
+    let minified = ShadowedTemplate { _marker: true }.render_once().unwrap();
+    let raw = RawShadowedTemplate { _marker: true }.render_once().unwrap();
+    assert!(raw.contains("from template_dirs"), "{raw}");
+    assert_eq!(minified, "<p>from template_dirs</p>");
 }

@@ -1,4 +1,5 @@
 use quote::quote;
+use sailfish_compiler::Config;
 use rayon::prelude::*;
 #[cfg(feature = "regex")]
 use regex::Regex;
@@ -110,43 +111,72 @@ pub struct DeriveInput {
 }
 
 /// Parse the derive input once and read the template path and minifier
-/// options from its attributes.
+/// options from its attributes, with the crate's `sailfish.toml` settings.
 pub fn parse_derive_input(tokens: proc_macro2::TokenStream) -> syn::Result<DeriveInput> {
     let item = syn::parse2::<ItemStruct>(tokens)?;
-    let template_path = template_path_from_attrs(&item.attrs)?;
-    let minify_options = minify_options_from_attrs(&item.attrs)?;
+    let manifest_dir = manifest_dir();
+    let config = sailfish_config(&manifest_dir)?;
+    let template_path = template_path_from_attrs(&item.attrs, &config.template_dirs, &manifest_dir)?;
+    let minify_options = minify_options_from_attrs(&item.attrs, config.delimiter)?;
     Ok(DeriveInput { item, template_path, minify_options })
 }
 
+/// Directory of the crate being compiled, the one using the derive.
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("environment variable `CARGO_MANIFEST_DIR` is not set"),
+    )
+}
+
+/// The `sailfish.toml` settings for the crate in `manifest_dir`, read the
+/// same way the sailfish derive reads them.
+fn sailfish_config(manifest_dir: &Path) -> syn::Result<Config> {
+    Config::search_file_and_read(manifest_dir)
+        .map_err(|err| syn::Error::new(proc_macro2::Span::call_site(), err))
+}
+
 /// Extract the template file path from a `#[template(path = "...")]` attribute
-/// in the source of a struct.
-///
-/// Relative paths are resolved against `./templates`, absolute paths are used
-/// as-is.
+/// in the source of a struct, resolved as in `resolve_template_path` against
+/// the `sailfish.toml` settings of the crate being compiled.
 ///
 /// The derive uses `parse_derive_input`; this is kept for the unit tests in
 /// `sailfish-minify-core`.
 #[allow(dead_code)]
 pub fn extract_template_path(str: &str) -> syn::Result<PathBuf> {
     let item = syn::parse_str::<ItemStruct>(str)?;
-    template_path_from_attrs(&item.attrs)
+    let manifest_dir = manifest_dir();
+    let config = sailfish_config(&manifest_dir)?;
+    template_path_from_attrs(&item.attrs, &config.template_dirs, &manifest_dir)
 }
 
-fn template_path_from_attrs(attrs: &[Attribute]) -> syn::Result<PathBuf> {
+fn template_path_from_attrs(
+    attrs: &[Attribute],
+    template_dirs: &[PathBuf],
+    manifest_dir: &Path,
+) -> syn::Result<PathBuf> {
     let Some(Lit::Str(path)) = template_attr_lit(attrs, "path") else {
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
             "Cannot find template path in struct attributes. Make sure to use #[template(path = \"...\")] for minified templates",
         ));
     };
-    let path = path.value();
+    Ok(resolve_template_path(&path.value(), template_dirs, manifest_dir))
+}
 
-    let path = Path::new(&path);
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(Path::new("./templates").join(path))
-    }
+/// Find a template file the way sailfish does: in each of `template_dirs`
+/// (from `sailfish.toml`, in sailfish's lookup order, so last first), then in
+/// `<manifest_dir>/templates`. An absolute `path` is used as-is.
+///
+/// A file found nowhere resolves to `<manifest_dir>/templates/<path>`, so
+/// the error from reading it names the default location.
+pub fn resolve_template_path(path: &str, template_dirs: &[PathBuf], manifest_dir: &Path) -> PathBuf {
+    let fallback = manifest_dir.join("templates").join(path);
+    template_dirs
+        .iter()
+        .rev()
+        .map(|dir| dir.join(path))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or(fallback)
 }
 
 /// The literal value of a `key = ...` option in the struct's `#[template(...)]`
@@ -442,7 +472,8 @@ pub fn native_minify_cfg() -> minify_html::Cfg {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MinifyOptions {
     pub minifier: Minifier,
-    /// Sailfish block delimiter, from `#[template(delimiter = '...')]`.
+    /// Sailfish block delimiter, from `#[template(delimiter = '...')]` or
+    /// `sailfish.toml`.
     pub delimiter: char,
 }
 
@@ -691,8 +722,10 @@ pub fn get_minify_options_from_token_stream(
     apply_minify_attrs(&struct_item.attrs, options)
 }
 
-fn minify_options_from_attrs(attrs: &[Attribute]) -> syn::Result<MinifyOptions> {
-    let mut options = MinifyOptions::default();
+/// `default_delimiter` is the `sailfish.toml` delimiter, which
+/// `#[template(delimiter = '...')]` overrides.
+fn minify_options_from_attrs(attrs: &[Attribute], default_delimiter: char) -> syn::Result<MinifyOptions> {
+    let mut options = MinifyOptions { delimiter: default_delimiter, ..MinifyOptions::default() };
     apply_minify_attrs(attrs, &mut options)?;
     Ok(options)
 }

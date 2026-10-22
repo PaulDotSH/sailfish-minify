@@ -13,7 +13,7 @@ keywords = ["minification", "html", "sailfish"]
 categories = ["template-engine"]
 license = "MIT"
 edition = "2024"
-exclude = ["sailfish-minify-core"]
+exclude = ["sailfish-minify-core", "sailfish.toml"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -45,7 +45,8 @@ minify-html = { version = "0.18.1", optional = true }
 [dependencies.sailfish-compiler]
 version = "0.11.8"
 default-features = false
-features = ["procmacro"]
+# `config` reads `sailfish.toml` (`template_dirs`, `delimiter`).
+features = ["procmacro", "config"]
 
 [dev-dependencies]
 sailfish = "0.11.8"

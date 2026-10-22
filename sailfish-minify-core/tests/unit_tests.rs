@@ -1,6 +1,7 @@
 use sailfish_minify_core::{
     extract_includes, extract_template_path, get_minify_options_from_token_stream,
     extract_include_ranges, minify_file_and_components, mirror_path, modify_template_path,
+    resolve_template_path,
     parse_derive_input, protect_blocks, replace_path_attribute, restore_blocks, tmp_main_path,
     Minifier, MinifyOptions, MINIFIER_INVOCATIONS,
 };
@@ -29,16 +30,21 @@ fn with_minify_lock<F: FnOnce()>(f: F) {
 // Template Path Extraction
 // ---------------------------------------------------------------------------
 
+/// Where sailfish looks for templates found in no `template_dirs` entry.
+fn default_templates() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("templates")
+}
+
 #[test]
 fn test_extract_template_path_simple() {
     let path = extract_template_path(r#"#[template(path = "foo.stpl")] struct Foo;"#).unwrap();
-    assert_eq!(path, Path::new("./templates").join("foo.stpl"));
+    assert_eq!(path, default_templates().join("foo.stpl"));
 }
 
 #[test]
 fn test_extract_template_path_nested() {
     let path = extract_template_path(r#"#[template(path = "sub/bar.stpl")] struct Foo;"#).unwrap();
-    assert_eq!(path, Path::new("./templates").join("sub/bar.stpl"));
+    assert_eq!(path, default_templates().join("sub/bar.stpl"));
 }
 
 #[test]
@@ -56,7 +62,31 @@ fn test_extract_template_path_ignores_doc_comments() {
         #[template(path = "foo.stpl")] struct Foo;"#,
     )
     .unwrap();
-    assert_eq!(path, Path::new("./templates").join("foo.stpl"));
+    assert_eq!(path, default_templates().join("foo.stpl"));
+}
+
+#[test]
+fn test_resolve_template_path_follows_sailfish_order() {
+    let dir = tempdir().unwrap();
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    let fallback = dir.path().join("templates");
+    for d in [&first, &second, &fallback] {
+        fs::create_dir_all(d).unwrap();
+    }
+    fs::write(first.join("both.stpl"), "").unwrap();
+    fs::write(second.join("both.stpl"), "").unwrap();
+    fs::write(fallback.join("default.stpl"), "").unwrap();
+    // `Config::template_dirs` holds sailfish.toml's list reversed; sailfish
+    // searches it from the end, so the first listed dir wins.
+    let template_dirs = [second.clone(), first.clone()];
+
+    let resolve = |path| resolve_template_path(path, &template_dirs, dir.path());
+    assert_eq!(resolve("both.stpl"), first.join("both.stpl"));
+    assert_eq!(resolve("default.stpl"), fallback.join("default.stpl"));
+    assert_eq!(resolve("missing.stpl"), fallback.join("missing.stpl"));
+
+    let absolute = second.join("both.stpl");
+    assert_eq!(resolve(absolute.to_str().unwrap()), absolute);
 }
 
 #[test]
@@ -71,7 +101,7 @@ fn test_parse_derive_input_reads_all_attributes() {
     .parse()
     .unwrap();
     let input = parse_derive_input(tokens).unwrap();
-    assert_eq!(input.template_path, Path::new("./templates").join("sub/bar.stpl"));
+    assert_eq!(input.template_path, default_templates().join("sub/bar.stpl"));
     assert_eq!(input.minify_options.minifier, Minifier::Custom("my-minifier".to_string()));
 }
 

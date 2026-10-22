@@ -37,6 +37,12 @@ npm `.cmd` shim is resolved automatically.
 With `native-minifier` disabled, the default minifier falls back to the
 `html-minifier` CLI.
 
+# sailfish.toml
+
+Templates are looked up the same way sailfish does it: in the `template_dirs` from your
+`sailfish.toml`, then in `templates/` next to your `Cargo.toml`. A `delimiter` set there
+is used unless the struct sets its own.
+
 # IMPORTANT!
 By default, sailfish-minify DOES also minify its components, however if you want to disable this behavior you can compile without "minifiy-components".
 Also, the components are minified with the "parent" template options, this behavior is however untested when there are multiple parents using the same component but using different minifier options.

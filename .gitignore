@@ -19,4 +19,5 @@ templates/test/medium.stpl
 templates/test/large.stpl
 templates/test/xlarge.stpl
 templates/
+templates_alt/
 *.md

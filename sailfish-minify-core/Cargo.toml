@@ -32,6 +32,11 @@ rayon = "1.12.0"
 pathdiff = "0.2.3"
 minify-html = { version = "0.18.1", optional = true }
 
+[dependencies.sailfish-compiler]
+version = "0.11.8"
+default-features = false
+features = ["config"]
+
 [dev-dependencies]
 tempfile = "3.27.0"
 criterion = "0.8.2"

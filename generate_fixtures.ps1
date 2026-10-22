@@ -149,4 +149,29 @@ Write-File "backslash_include.stpl" @'
 </div>
 '@
 
-Write-Host "Regenerated test fixtures in templates/test/"
+# Templates under `template_dirs` from sailfish.toml (templates_alt/).
+# `shadowed.stpl` also exists in templates/test/; the template_dirs copy wins.
+Write-File "shadowed.stpl" '<p>from templates</p>'
+$altDir = Join-Path $PSScriptRoot "templates_alt\test"
+New-Item -ItemType Directory -Force -Path $altDir | Out-Null
+function Write-AltFile([string]$name, [string]$content) {
+    [System.IO.File]::WriteAllText((Join-Path $altDir $name), $content, $utf8NoBom)
+}
+Write-AltFile "alt_only.stpl" @'
+<div>
+  <p>Hello, <%= name %></p>
+  <% include!("alt_part.stpl"); %>
+</div>
+'@
+Write-AltFile "alt_part.stpl" @'
+<span>
+  alt part
+</span>
+'@
+Write-AltFile "shadowed.stpl" @'
+<p>
+  from template_dirs
+</p>
+'@
+
+Write-Host "Regenerated test fixtures in templates/test/ and templates_alt/test/"
